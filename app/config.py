@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 # XDG paths
 # ---------------------------------------------------------------------------
 
+
 def get_config_dir() -> Path:
     """Return $XDG_CONFIG_HOME/tui-trader, defaulting to ~/.config/tui-trader."""
     xdg_config = os.environ.get("XDG_CONFIG_HOME", "")
@@ -70,6 +71,19 @@ DEFAULT_STOP_LOSS_PCT=2.0
 
 # Order book depth (must be one of: 10, 25, 100, 500, 1000)
 ORDER_BOOK_DEPTH=10
+
+# --- Cloud Database Sync (optional) ---
+# Syncs the local SQLite database to any S3-compatible provider.
+# Recommended free provider: Cloudflare R2 (10 GB free, no egress fees).
+# Setup: create a bucket, generate an API token with Read + Write access,
+# then fill in the values below and set CLOUD_SYNC_ENABLED=true.
+# Leave CLOUD_SYNC_ENABLED=false (or omit this section) for local-only mode.
+# CLOUD_SYNC_ENABLED=false
+# CLOUD_SYNC_ENDPOINT_URL=https://<account_id>.r2.cloudflarestorage.com
+# CLOUD_SYNC_BUCKET=tui-trader-db
+# CLOUD_SYNC_KEY_ID=
+# CLOUD_SYNC_KEY_SECRET=
+# CLOUD_SYNC_OBJECT_KEY=trades.db
 """
 
 
@@ -97,6 +111,7 @@ load_dotenv(CONFIG_FILE)
 # ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
+
 
 def _require(key: str) -> str:
     value = os.getenv(key)
@@ -144,3 +159,11 @@ DEFAULT_STOP_LOSS_PCT: float = _get_float("DEFAULT_STOP_LOSS_PCT", 2.0)
 _VALID_BOOK_DEPTHS = {10, 25, 100, 500, 1000}
 _raw_depth = _get_int("ORDER_BOOK_DEPTH", 10)
 ORDER_BOOK_DEPTH: int = _raw_depth if _raw_depth in _VALID_BOOK_DEPTHS else 10
+
+# --- Cloud sync ---
+CLOUD_SYNC_ENABLED: bool = os.getenv("CLOUD_SYNC_ENABLED", "false").lower() == "true"
+CLOUD_SYNC_ENDPOINT_URL: str = os.getenv("CLOUD_SYNC_ENDPOINT_URL", "")
+CLOUD_SYNC_BUCKET: str = os.getenv("CLOUD_SYNC_BUCKET", "")
+CLOUD_SYNC_KEY_ID: str = os.getenv("CLOUD_SYNC_KEY_ID", "")
+CLOUD_SYNC_KEY_SECRET: str = os.getenv("CLOUD_SYNC_KEY_SECRET", "")
+CLOUD_SYNC_OBJECT_KEY: str = os.getenv("CLOUD_SYNC_OBJECT_KEY", "trades.db")

@@ -17,6 +17,7 @@ from textual.containers import Vertical, Horizontal
 from widgets.order_form import OrderForm
 import app.exchange as exchange
 from app import database as db
+from app import cloud_sync
 from app.models import Position, Trade
 from app.pnl import calculate_weighted_avg_entry
 
@@ -133,6 +134,12 @@ class TradeScreen(Screen):
         Submit the order to Kraken via REST and update local position tracking.
         Runs as a thread worker so the blocking REST call doesn't freeze the UI.
         """
+        if getattr(self.app, "_read_only", False):
+            self.app.notify(
+                "Read-only session — close the other session to trade",
+                severity="warning",
+            )
+            return
         status = self.query_one("#status-msg", Static)
         status.remove_class("status-success", "status-error")
         status.update("Placing order...")
@@ -179,23 +186,59 @@ class TradeScreen(Screen):
             filled_amount = float(order.get("filled") or order.get("amount") or amount)
             fee_info = order.get("fee") or {}
             fee = float(fee_info.get("cost") or 0)
+            fee_currency = str(fee_info.get("currency") or "USD")
             order_id = str(order.get("id", ""))
+
+            if not fee_info:
+                self.app.call_from_thread(
+                    self.app.notify,
+                    "Fee data missing from order response — fee recorded as $0.00. "
+                    "Check trade history and correct manually if needed.",
+                    severity="warning",
+                    timeout=15,
+                )
 
             # Update local position tracking
             if side == "buy":
-                self._record_buy(symbol, filled_amount, fill_price, fee, order_id, order_type)
+                self._record_buy(
+                    symbol,
+                    filled_amount,
+                    fill_price,
+                    fee,
+                    fee_currency,
+                    order_id,
+                    order_type,
+                )
             else:
-                self._record_sell(symbol, filled_amount, fill_price, fee, order_id, order_type)
+                self._record_sell(
+                    symbol,
+                    filled_amount,
+                    fill_price,
+                    fee,
+                    fee_currency,
+                    order_id,
+                    order_type,
+                )
 
-            self.app.call_from_thread(self._on_order_success, side, filled_amount, symbol, fill_price)
+            self.app.call_from_thread(
+                self._on_order_success, side, filled_amount, symbol, fill_price
+            )
             # Immediately reload positions in the app so the dashboard reflects
             # the change without waiting for the WebSocket fill notification.
             self.app.call_from_thread(self.app.reload_positions)
+            # Push the updated DB to the cloud so a crash between here and
+            # clean shutdown doesn't lose this trade from the cloud copy.
+            if cloud_sync.is_configured() and getattr(
+                self.app, "_cloud_session_id", None
+            ):
+                cloud_sync.sync_up()
 
         except Exception as e:
             self.app.call_from_thread(self._on_order_error, str(e))
 
-    def _on_order_success(self, side: str, amount: float, symbol: str, price: float) -> None:
+    def _on_order_success(
+        self, side: str, amount: float, symbol: str, price: float
+    ) -> None:
         self.query_one(OrderForm).clear()
         self.app.notify(
             f"✓ {side.capitalize()} {amount} {symbol.split('/')[0]} @ ${price:,.2f}",
@@ -215,6 +258,7 @@ class TradeScreen(Screen):
         amount: float,
         price: float,
         fee: float,
+        fee_currency: str,
         order_id: str,
         order_type: str,
     ) -> None:
@@ -242,6 +286,7 @@ class TradeScreen(Screen):
                 amount=amount,
                 price=price,
                 fee=fee,
+                fee_currency=fee_currency,
                 kraken_order_id=order_id,
                 order_type=order_type,
             )
@@ -253,6 +298,7 @@ class TradeScreen(Screen):
         amount: float,
         price: float,
         fee: float,
+        fee_currency: str,
         order_id: str,
         order_type: str,
     ) -> None:
@@ -278,6 +324,7 @@ class TradeScreen(Screen):
                 amount=amount,
                 price=price,
                 fee=fee,
+                fee_currency=fee_currency,
                 kraken_order_id=order_id,
                 order_type=order_type,
             )

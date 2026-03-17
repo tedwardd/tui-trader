@@ -31,6 +31,21 @@ class AlertManager:
     def __init__(self, on_trigger: Optional[AlertCallback] = None) -> None:
         self._on_trigger = on_trigger
         self._active_alerts: list[PriceAlert] = []
+        self._read_only: bool = False
+
+    @property
+    def read_only(self) -> bool:
+        """
+        When True, triggered alerts are removed from the in-memory active set
+        and the notification callback fires, but the DB is not written to.
+        Used in cloud-locked read-only sessions so alerts still notify the user
+        without persisting triggered state.
+        """
+        return self._read_only
+
+    @read_only.setter
+    def read_only(self, value: bool) -> None:
+        self._read_only = value
 
     def reload(self) -> None:
         """Reload active (untriggered) alerts from the database."""
@@ -64,13 +79,12 @@ class AlertManager:
 
             hit = (
                 alert.direction == "above" and current_price >= alert.target_price
-            ) or (
-                alert.direction == "below" and current_price <= alert.target_price
-            )
+            ) or (alert.direction == "below" and current_price <= alert.target_price)
 
             if hit:
                 triggered.append(alert)
-                db.mark_alert_triggered(alert.id)
+                if not self._read_only:
+                    db.mark_alert_triggered(alert.id)
                 if self._on_trigger:
                     self._on_trigger(alert, current_price)
             else:

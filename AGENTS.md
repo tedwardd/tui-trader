@@ -71,6 +71,7 @@ python3 -m venv --system-site-packages .venv
 |---|---|
 | Config / credentials | `~/.config/tui-trader/config.env` |
 | Database | `~/.local/share/tui-trader/trades.db` |
+| Cloud sync session ID | `~/.local/share/tui-trader/cloud_sync.session` |
 
 On first run, if `~/.config/tui-trader/config.env` does not exist, it is
 created from a template and the app exits with instructions. The user must
@@ -165,11 +166,57 @@ The callback always receives quantity in base asset regardless of mode.
 
 ## Module reference
 
+### `app/cloud_sync.py`
+- Optional cloud database sync to any S3-compatible provider (R2, S3, B2, etc.)
+- All functions silently no-op when `CLOUD_SYNC_ENABLED=false` or vars are missing
+- `is_configured()` — returns True only when all required vars are set and enabled
+- `sync_down()` — downloads DB from bucket if remote `LastModified` > local mtime;
+  called during `on_mount` before `init_db()` so the app boots from the latest copy
+- `sync_up()` — flushes WAL (`PRAGMA wal_checkpoint(TRUNCATE)`) then uploads DB;
+  called in `on_unmount` and after each trade write in `screens/trade.py`
+- `acquire_lock(session_id)` / `release_lock(session_id)` — writes/deletes the
+  lock file at `{CLOUD_SYNC_OBJECT_KEY}.lock`; release checks ownership first
+- `force_clear_lock()` — unconditional lock delete; used by `--force-unlock` only
+- `check_lock()` — returns parsed lock dict or `None`
+- `load_local_session_id()` / `save_local_session_id()` / `clear_local_session_id()`
+  — manage `~/.local/share/tui-trader/cloud_sync.session` for crash recovery
+
+**Lock file format** (JSON in bucket):
+```json
+{
+    "session_id": "<uuid4>",
+    "hostname":   "machine-a.local",
+    "pid":        12345,
+    "locked_at":  "2025-01-01T10:00:00Z"
+}
+```
+
+**Read-only mode**: when a second session finds the lock held by another session,
+`TradeApp._read_only` is set to `True`. All write operations across every screen
+check `self.app._read_only` and show a warning instead of proceeding. A persistent
+banner is shown at the top of the app. `AlertManager.read_only` is also set so
+alert notifications still fire but triggered status is not written to the DB.
+
+**Crash recovery — Path A** (same machine): the app writes `session_id` to
+`cloud_sync.session` on lock acquisition. On restart, if that file's session_id
+matches the cloud lock, the app resumes as lock owner and proceeds normally.
+
+**Crash recovery — Path B** (different machine, or session file gone):
+```bash
+.venv/bin/python main.py --force-unlock
+```
+This prints the stale lock details, explains the data-loss risk, and requires
+typing `CONFIRM`. After clearing the lock, the app starts as a normal session.
+Recovery of any lost trades: `scripts/import_orders.py <ORDER_ID> [...]`
+
 ### `app/config.py`
 - Handles XDG path resolution and first-run bootstrap
 - Exports: `CONFIG_DIR`, `DATA_DIR`, `CONFIG_FILE`, `DATABASE_PATH`
 - Exports all settings as module-level constants
 - Calls `sys.exit(0)` on first run if config file doesn't exist yet
+- Also exports `CLOUD_SYNC_ENABLED`, `CLOUD_SYNC_ENDPOINT_URL`,
+  `CLOUD_SYNC_BUCKET`, `CLOUD_SYNC_KEY_ID`, `CLOUD_SYNC_KEY_SECRET`,
+  `CLOUD_SYNC_OBJECT_KEY` (all optional, default to disabled/empty)
 
 ### `app/models.py`
 - SQLModel table definitions: `Position`, `Trade`, `PriceAlert`
@@ -214,6 +261,8 @@ The callback always receives quantity in base asset regardless of mode.
 - `AlertManager` — evaluates active alerts on every ticker event
 - Calls `on_trigger` callback (set to `app._on_alert_triggered`) when hit
 - `reload()` must be called on startup to load alerts from DB
+- `read_only` property — when True, triggered alerts still fire the notification
+  callback but `db.mark_alert_triggered()` is skipped (used in locked sessions)
 
 ### `app/notifications.py`
 - `send_notification(title, body, urgency, timeout_ms)` — sends an OS desktop
@@ -229,11 +278,19 @@ The callback always receives quantity in base asset regardless of mode.
 - `TradeApp(App)` — the root Textual application
 - Key state: `_prices` (dict, last known price per symbol), `_free_usd`,
   `_asset_balances` (full Kraken wallet), `_open_positions`
+- `_read_only: bool` — True when another session holds the cloud lock; all
+  write actions across every screen check this flag
+- `_cloud_session_id: str | None` — UUID of the current cloud lock; None if
+  cloud sync is not configured or this session is read-only
+- `_lock_info: dict | None` — lock metadata (hostname, locked_at, etc.) from
+  the cloud, set when entering read-only mode; used to populate the banner
 - `_refresh_dashboard()` — called on every ticker event; computes portfolio
   value as `_free_usd + sum(amount * price for each asset in _asset_balances)`
 - `reload_positions()` — called immediately after a buy/sell is recorded
   locally so the dashboard updates without waiting for the WS fill notification
 - Portfolio value in header subtitle is set inside `_refresh_dashboard()`
+- `_handle_force_unlock()` — standalone function (not a method); runs before
+  the TUI starts when `--force-unlock` is passed; interactive terminal prompt
 
 ### `screens/stop_loss_modal.py`
 - `StopLossModal(ModalScreen)` — triggered by `l` on the dashboard

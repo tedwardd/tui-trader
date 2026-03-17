@@ -84,26 +84,46 @@ class DashboardScreen(Screen):
     # Actions — delegate to the parent app for screen navigation
     # -----------------------------------------------------------------------
 
+    _READ_ONLY_MSG = "Read-only session — close the other session to enable trading"
+
+    def _is_read_only(self) -> bool:
+        return getattr(self.app, "_read_only", False)
+
     def action_buy(self) -> None:
+        if self._is_read_only():
+            self.notify(self._READ_ONLY_MSG, severity="warning")
+            return
         self.app.push_screen("trade_buy")
 
     def action_sell(self) -> None:
+        if self._is_read_only():
+            self.notify(self._READ_ONLY_MSG, severity="warning")
+            return
         self.app.push_screen("trade_sell")
 
     def action_add_to_position(self) -> None:
         """Pre-fill the buy form with the currently selected position's symbol."""
+        if self._is_read_only():
+            self.notify(self._READ_ONLY_MSG, severity="warning")
+            return
         table = self.query_one(PositionTable)
         symbol = table.get_selected_symbol()
         self.app.open_add_to_position(symbol)
 
     def action_close_position(self) -> None:
         """Pre-fill the sell form with the currently selected position."""
+        if self._is_read_only():
+            self.notify(self._READ_ONLY_MSG, severity="warning")
+            return
         table = self.query_one(PositionTable)
         symbol = table.get_selected_symbol()
         self.app.open_close_position(symbol)
 
     def action_set_stop_loss(self) -> None:
         """Open the stop-loss modal for the currently selected position."""
+        if self._is_read_only():
+            self.notify(self._READ_ONLY_MSG, severity="warning")
+            return
         symbol = self.query_one(PositionTable).get_selected_symbol()
         if not symbol:
             self.notify("Select a position first", severity="warning")

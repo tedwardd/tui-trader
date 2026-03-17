@@ -10,7 +10,16 @@ Allows the user to:
 
 from textual.app import ComposeResult
 from textual.screen import Screen
-from textual.widgets import Header, Footer, Static, DataTable, Input, Button, Select, Label
+from textual.widgets import (
+    Header,
+    Footer,
+    Static,
+    DataTable,
+    Input,
+    Button,
+    Select,
+    Label,
+)
 from textual.containers import Vertical, Horizontal
 
 from app.models import PriceAlert
@@ -97,7 +106,9 @@ class AlertsScreen(Screen):
 
                 with Horizontal(classes="form-row"):
                     yield Label("Symbol", classes="form-label")
-                    yield Input(placeholder="BTC/USD", id="alert-symbol", classes="form-input")
+                    yield Input(
+                        placeholder="BTC/USD", id="alert-symbol", classes="form-input"
+                    )
 
                 with Horizontal(classes="form-row"):
                     yield Label("Direction", classes="form-label")
@@ -110,11 +121,17 @@ class AlertsScreen(Screen):
 
                 with Horizontal(classes="form-row"):
                     yield Label("Target Price", classes="form-label")
-                    yield Input(placeholder="0.00", id="alert-price", classes="form-input")
+                    yield Input(
+                        placeholder="0.00", id="alert-price", classes="form-input"
+                    )
 
                 with Horizontal(classes="form-row"):
                     yield Label("Note (opt.)", classes="form-label")
-                    yield Input(placeholder="Optional note", id="alert-note", classes="form-input")
+                    yield Input(
+                        placeholder="Optional note",
+                        id="alert-note",
+                        classes="form-input",
+                    )
 
                 yield Static("", id="alert-error", classes="error-msg")
 
@@ -125,6 +142,12 @@ class AlertsScreen(Screen):
 
     def on_mount(self) -> None:
         self.refresh_table()
+        if getattr(self.app, "_read_only", False):
+            # Hide the add-alert form entirely in read-only sessions
+            try:
+                self.query_one(".add-alert-form").display = False
+            except Exception:
+                pass
 
     def refresh_table(self) -> None:
         """Reload all alerts from the database and repopulate the table."""
@@ -133,7 +156,9 @@ class AlertsScreen(Screen):
         table.clear()
 
         for alert in alerts:
-            direction_color = "alert-above" if alert.direction == "above" else "alert-below"
+            direction_color = (
+                "alert-above" if alert.direction == "above" else "alert-below"
+            )
             direction_symbol = "▲" if alert.direction == "above" else "▼"
             status = "✓ Triggered" if alert.triggered else "⏳ Active"
             status_class = "triggered" if alert.triggered else ""
@@ -142,9 +167,15 @@ class AlertsScreen(Screen):
                 alert.symbol,
                 f"[{direction_color}]{direction_symbol} {alert.direction.capitalize()}[/{direction_color}]",
                 f"${alert.target_price:,.2f}",
-                f"[{status_class}]{status}[/{status_class}]" if status_class else status,
-                alert.created_at.strftime("%Y-%m-%d %H:%M") if alert.created_at else "—",
-                alert.triggered_at.strftime("%Y-%m-%d %H:%M") if alert.triggered_at else "—",
+                f"[{status_class}]{status}[/{status_class}]"
+                if status_class
+                else status,
+                alert.created_at.strftime("%Y-%m-%d %H:%M")
+                if alert.created_at
+                else "—",
+                alert.triggered_at.strftime("%Y-%m-%d %H:%M")
+                if alert.triggered_at
+                else "—",
                 alert.note or "—",
                 key=str(alert.id),
             )
@@ -154,6 +185,12 @@ class AlertsScreen(Screen):
             self._add_alert()
 
     def _add_alert(self) -> None:
+        if getattr(self.app, "_read_only", False):
+            self.notify(
+                "Read-only session — close the other session to manage alerts",
+                severity="warning",
+            )
+            return
         error = self.query_one("#alert-error", Static)
         error.update("")
 
@@ -188,9 +225,18 @@ class AlertsScreen(Screen):
         self.query_one("#alert-note", Input).value = ""
 
         self.refresh_table()
-        self.notify(f"Alert set: {symbol} {direction} ${target_price:,.2f}", severity="information")
+        self.notify(
+            f"Alert set: {symbol} {direction} ${target_price:,.2f}",
+            severity="information",
+        )
 
     def action_delete_selected(self) -> None:
+        if getattr(self.app, "_read_only", False):
+            self.notify(
+                "Read-only session — close the other session to manage alerts",
+                severity="warning",
+            )
+            return
         table = self.query_one("#alerts-table", DataTable)
         if table.cursor_row < 0 or table.row_count == 0:
             return

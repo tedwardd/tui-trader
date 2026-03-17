@@ -3,3 +3,4 @@ textual>=0.60.0
 textual-plotext>=0.2.1
 sqlmodel>=0.0.16
 python-dotenv>=1.0.0
+boto3>=1.34.0

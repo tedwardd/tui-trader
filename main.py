@@ -7,9 +7,11 @@ Entry point. Wires together:
 - Reactive state (live prices, positions, balance)
 - Alert evaluation on every ticker event
 - Local database sync on fills
+- Optional cloud database sync with single-writer locking
 
 Usage:
-    python main.py
+    python main.py                 # normal start
+    python main.py --force-unlock  # clear a stale cloud lock (crash recovery)
 
 Keyboard shortcuts (global):
     1  — Dashboard
@@ -23,15 +25,20 @@ Keyboard shortcuts (global):
     q  — Quit
 """
 
+import argparse
+import asyncio
 import logging
+import sys
 from typing import Optional
+from uuid import uuid4
 
 from textual.app import App, ComposeResult
-from textual.widgets import Header, Footer
+from textual.widgets import Header, Footer, Static
 from textual.reactive import reactive
 
 from app.config import DEFAULT_SYMBOL, DEFAULT_STOP_LOSS_PCT
 from app import database as db
+from app import cloud_sync
 from app.models import Position
 from app.pnl import (
     calculate_snapshot,
@@ -56,6 +63,83 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# CLI argument parsing
+# ---------------------------------------------------------------------------
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="tui-trader",
+        description="Kraken Pro terminal trading UI",
+    )
+    parser.add_argument(
+        "--force-unlock",
+        action="store_true",
+        help=(
+            "Force-clear a stale cloud lock and start a new session. "
+            "Use this when a previous session crashed without releasing the lock."
+        ),
+    )
+    return parser.parse_args()
+
+
+def _handle_force_unlock() -> None:
+    """
+    Interactive terminal flow to clear a stale cloud lock.
+
+    Prints lock details, explains the data-loss risk, and requires the user to
+    type CONFIRM before proceeding.  Returns normally on confirmation so the
+    app can continue to start; calls sys.exit() otherwise.
+    """
+    if not cloud_sync.is_configured():
+        print("Error: cloud sync is not configured — there is no lock to clear.")
+        print(f"Check CLOUD_SYNC_ENABLED and related vars in your config file.")
+        sys.exit(1)
+
+    lock = cloud_sync.check_lock()
+    if lock is None:
+        print("No cloud lock found. Nothing to unlock.")
+        sys.exit(0)
+
+    print()
+    print("⚠  Stale cloud lock detected")
+    print(
+        f"   Held by:  {lock.get('hostname', 'unknown')} (PID {lock.get('pid', '?')})"
+    )
+    print(f"   Since:    {lock.get('locked_at', 'unknown')}")
+    print()
+    print("Forcing unlock will start a new session from the last cloud-synced state.")
+    print("Any trades recorded in the crashed session that were NOT synced to the")
+    print("cloud before the crash will be absent from the database.")
+    print()
+    print("Recovery steps (after unlock):")
+    print("  1. Run: .venv/bin/python scripts/import_orders.py <ORDER_ID> [...]")
+    print("     to re-import any missing trades from Kraken order history.")
+    print("  2. Or review your full trade history at:")
+    print("     https://www.kraken.com/u/history/trades")
+    print()
+    try:
+        answer = input("Type CONFIRM to proceed, or press Ctrl+C to cancel: ")
+    except KeyboardInterrupt:
+        print("\nAborted.")
+        sys.exit(1)
+
+    if answer.strip() != "CONFIRM":
+        print("Aborted.")
+        sys.exit(1)
+
+    cloud_sync.force_clear_lock()
+    cloud_sync.clear_local_session_id()
+    print("Lock cleared. Starting application...")
+    print()
+
+
+# ---------------------------------------------------------------------------
+# Main application
+# ---------------------------------------------------------------------------
+
+
 class TradeApp(App):
     """
     Main Textual application.
@@ -73,6 +157,17 @@ class TradeApp(App):
     Header {
         background: $primary-darken-2;
     }
+    #read-only-banner {
+        display: none;
+        dock: top;
+        background: $warning-darken-2;
+        color: $text;
+        content-align: center middle;
+        height: 1;
+    }
+    #read-only-banner.visible {
+        display: block;
+    }
     """
 
     BINDINGS = [
@@ -89,8 +184,8 @@ class TradeApp(App):
     # ---------------------------------------------------------------------------
 
     _current_price: reactive[float] = reactive(0.0)
-    _free_usd: float = 0.0                    # uninvested USD cash on Kraken
-    _asset_balances: dict[str, float] = {}    # all non-USD holdings: {"BTC": 0.5, ...}
+    _free_usd: float = 0.0  # uninvested USD cash on Kraken
+    _asset_balances: dict[str, float] = {}  # all non-USD holdings: {"BTC": 0.5, ...}
     _open_positions: list[Position] = []
 
     def __init__(self) -> None:
@@ -99,16 +194,43 @@ class TradeApp(App):
         self._prices: dict[str, float] = {}  # last known price per symbol
         self._asset_balances = {}
         self._alert_manager = AlertManager(on_trigger=self._on_alert_triggered)
+        # Cloud sync state
+        self._read_only: bool = False
+        self._cloud_session_id: Optional[str] = None
+        self._lock_info: Optional[dict] = None
 
     # ---------------------------------------------------------------------------
     # App lifecycle
     # ---------------------------------------------------------------------------
 
-    def on_mount(self) -> None:
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield Static("", id="read-only-banner")
+        yield Footer()
+
+    async def on_mount(self) -> None:
         """Initialise DB, load state, start WebSocket workers."""
+
+        # --- Cloud sync: download latest DB and acquire (or check) the lock ---
+        if cloud_sync.is_configured():
+            await asyncio.to_thread(cloud_sync.sync_down)
+            await self._setup_cloud_lock()
+
+        # --- Initialise local database (using the downloaded file if synced) ---
         db.init_db()
         self._alert_manager.reload()
         self._open_positions = db.get_open_positions()
+
+        # Show read-only banner after DB is ready (so screens can be queried)
+        if self._read_only:
+            lock = self._lock_info or {}
+            banner = self.query_one("#read-only-banner", Static)
+            banner.update(
+                f"READ-ONLY  ·  Locked by {lock.get('hostname', 'unknown')} "
+                f"since {lock.get('locked_at', 'unknown')}  ·  "
+                "Close that session to enable trading here"
+            )
+            banner.add_class("visible")
 
         # Fetch full wallet balance via REST on startup so portfolio value and
         # risk % are correct from the first ticker update, before the private
@@ -143,18 +265,52 @@ class TradeApp(App):
             name="private",
         )
 
+    async def _setup_cloud_lock(self) -> None:
+        """
+        Determine whether this session owns the cloud lock or should be read-only.
+
+        - No lock in cloud       → acquire it, proceed normally
+        - Lock matches local session ID → crash recovery Path A: resume as owner
+        - Lock held by other session → enter read-only mode
+        """
+        lock = await asyncio.to_thread(cloud_sync.check_lock)
+
+        if lock is None:
+            # No lock — acquire it
+            session_id = str(uuid4())
+            self._cloud_session_id = session_id
+            await asyncio.to_thread(cloud_sync.acquire_lock, session_id)
+        else:
+            local_session_id = cloud_sync.load_local_session_id()
+            if local_session_id and local_session_id == lock.get("session_id"):
+                # This machine owns the lock (crash recovery Path A)
+                log.info(
+                    "cloud_sync: resuming ownership of stale lock (session %s)",
+                    local_session_id,
+                )
+                self._cloud_session_id = local_session_id
+            else:
+                # A different session holds the lock — enter read-only mode
+                self._read_only = True
+                self._alert_manager.read_only = True
+                self._lock_info = lock
+                log.info(
+                    "cloud_sync: read-only mode — lock held by %s (session %s)",
+                    lock.get("hostname"),
+                    lock.get("session_id"),
+                )
+
     async def on_unmount(self) -> None:
-        """Clean up WebSocket connections on exit."""
+        """Clean up WebSocket connections and release cloud lock on exit."""
         await stream_manager.close()
+        if cloud_sync.is_configured() and self._cloud_session_id:
+            await asyncio.to_thread(cloud_sync.sync_up)
+            await asyncio.to_thread(cloud_sync.release_lock, self._cloud_session_id)
+            cloud_sync.clear_local_session_id()
 
     # ---------------------------------------------------------------------------
     # Screen registration
     # ---------------------------------------------------------------------------
-
-    def compose(self) -> ComposeResult:
-        # Screens are registered here; the app starts on the dashboard
-        yield Header()
-        yield Footer()
 
     def on_ready(self) -> None:
         """Register all screens after the app is ready."""
@@ -214,8 +370,13 @@ class TradeApp(App):
                 )
                 if pos:
                     from app.pnl import calculate_snapshot
-                    snap = calculate_snapshot(pos, self._current_price, 1.0, DEFAULT_STOP_LOSS_PCT)
-                    ob_screen.set_position_levels(pos.avg_entry_price, snap.suggested_stop_price)
+
+                    snap = calculate_snapshot(
+                        pos, self._current_price, 1.0, DEFAULT_STOP_LOSS_PCT
+                    )
+                    ob_screen.set_position_levels(
+                        pos.avg_entry_price, snap.suggested_stop_price
+                    )
                 else:
                     ob_screen.set_position_levels(None, None)
                 ob_screen.update_orderbook(self._symbol, orderbook)
@@ -362,7 +523,9 @@ class TradeApp(App):
             screen.prefill(symbol=symbol, amount=amount)
         self.push_screen("trade_sell")
 
-    def set_stop_loss_for_symbol(self, symbol: str, stop_price: Optional[float]) -> None:
+    def set_stop_loss_for_symbol(
+        self, symbol: str, stop_price: Optional[float]
+    ) -> None:
         """
         Persist a manual stop-loss price (or clear it) for the given symbol,
         then reload positions and immediately refresh the dashboard.
@@ -386,5 +549,7 @@ class TradeApp(App):
 
 
 if __name__ == "__main__":
-    app = TradeApp()
-    app.run()
+    args = _parse_args()
+    if args.force_unlock:
+        _handle_force_unlock()  # returns on CONFIRM, exits otherwise
+    TradeApp().run()

@@ -90,7 +90,9 @@ class StopLossModal(ModalScreen):
         stop_source = "manual" if self._stop_is_manual else "calculated"
         with Vertical():
             yield Static(f"Set Stop-Loss — {self._symbol}", classes="modal-title")
-            yield Static(f"Current price:  ${self._current_price:,.2f}", classes="info-row")
+            yield Static(
+                f"Current price:  ${self._current_price:,.2f}", classes="info-row"
+            )
             yield Static(f"Avg entry:      ${self._avg_entry:,.2f}", classes="info-row")
             yield Static(
                 f"Current stop:   ${self._current_stop:,.2f}  ({stop_source})",
@@ -114,6 +116,12 @@ class StopLossModal(ModalScreen):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-cancel":
             self.dismiss()
+            return
+
+        if getattr(self.app, "_read_only", False):
+            self.query_one("#error-msg", Static).update(
+                "Read-only session — close the other session to modify stop-loss"
+            )
             return
 
         if event.button.id == "btn-clear":
