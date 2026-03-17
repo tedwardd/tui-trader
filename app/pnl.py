@@ -25,14 +25,15 @@ class PositionSnapshot:
     current_price: float
     unrealized_pnl: float
     unrealized_pnl_pct: float
+    gross_pct: float  # (current_price - avg_entry) / avg_entry * 100, no fees
     cost_basis: float  # avg_entry * total_amount
     current_value: float  # current_price * total_amount
     realized_pnl: float
     suggested_stop_price: float
     stop_loss_pct: float
-    stop_is_manual: bool          # True if stop was set manually, False if calculated
-    portfolio_value_usd: float    # total portfolio for risk % calc
-    risk_pct: float               # cost_basis / portfolio_value * 100
+    stop_is_manual: bool  # True if stop was set manually, False if calculated
+    portfolio_value_usd: float  # total portfolio for risk % calc
+    risk_pct: float  # cost_basis / portfolio_value * 100
 
 
 def calculate_snapshot(
@@ -52,16 +53,24 @@ def calculate_snapshot(
     """
     unrealized = position.unrealized_pnl(current_price)
     unrealized_pct = position.unrealized_pnl_pct(current_price)
+    gross_pct = (
+        (current_price - position.avg_entry_price) / position.avg_entry_price * 100
+        if position.avg_entry_price > 0
+        else 0.0
+    )
     cost_basis = position.avg_entry_price * position.total_amount
     current_value = current_price * position.total_amount
-    risk_pct = (cost_basis / portfolio_value_usd * 100) if portfolio_value_usd > 0 else 0.0
+    risk_pct = (
+        (cost_basis / portfolio_value_usd * 100) if portfolio_value_usd > 0 else 0.0
+    )
 
     # Use manual stop if set, otherwise calculate from default %
     if position.stop_loss_price is not None:
         suggested_stop = position.stop_loss_price
         effective_stop_pct = (
             (1 - suggested_stop / position.avg_entry_price) * 100
-            if position.avg_entry_price > 0 else stop_loss_pct
+            if position.avg_entry_price > 0
+            else stop_loss_pct
         )
         stop_is_manual = True
     else:
@@ -76,6 +85,7 @@ def calculate_snapshot(
         current_price=current_price,
         unrealized_pnl=unrealized,
         unrealized_pnl_pct=unrealized_pct,
+        gross_pct=gross_pct,
         cost_basis=cost_basis,
         current_value=current_value,
         realized_pnl=position.realized_pnl,

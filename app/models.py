@@ -27,7 +27,9 @@ class Position(SQLModel, table=True):
 
     # P&L
     realized_pnl: float = Field(default=0.0)  # updated on partial/full close
-    total_fees_paid: float = Field(default=0.0)  # cumulative fees (post-MVP use)
+    total_fees_paid: float = Field(
+        default=0.0
+    )  # buy-side fees only; used in unrealized P&L calculation
 
     # Stop-loss — None means use the default % from config
     stop_loss_price: Optional[float] = Field(default=None)
@@ -41,15 +43,16 @@ class Position(SQLModel, table=True):
         """
         Calculate unrealized P&L at a given market price, net of buy-side fees.
         Fees paid on entry are a real cost that must be recovered before the
-        position is profitable.
+        position is profitable. Sell-side fees are excluded here — they are
+        deducted from realized_pnl when a reduction is recorded.
         """
         gross = (current_price - self.avg_entry_price) * self.total_amount
         return gross - self.total_fees_paid
 
     def unrealized_pnl_pct(self, current_price: float) -> float:
         """
-        Calculate unrealized P&L as a percentage of total cost basis including fees.
-        cost_basis = (avg_entry * amount) + fees_paid
+        Calculate unrealized P&L as a percentage of total cost basis including
+        buy-side fees. cost_basis = (avg_entry * amount) + buy_fees_paid
         """
         cost_basis = (self.avg_entry_price * self.total_amount) + self.total_fees_paid
         if cost_basis == 0:
@@ -70,11 +73,15 @@ class Position(SQLModel, table=True):
         """
         Reduce or close this position, calculating realized P&L for the closed portion.
         Returns the realized P&L for this reduction.
+
+        The sell-side fee is deducted from realized_pnl only. It is NOT added to
+        total_fees_paid, which tracks buy-side fees exclusively for use in
+        unrealized_pnl(). Adding sell fees there would cause them to be subtracted
+        again from any remaining open position's unrealized P&L — a double-deduction.
         """
         close_amount = min(amount, self.total_amount)
         pnl = (price - self.avg_entry_price) * close_amount - fee
         self.realized_pnl += pnl
-        self.total_fees_paid += fee
         self.total_amount -= close_amount
 
         if self.total_amount <= 1e-6:  # treat as zero — below any exchange minimum
@@ -128,4 +135,6 @@ class PriceAlert(SQLModel, table=True):
     triggered: bool = Field(default=False)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     triggered_at: Optional[datetime] = Field(default=None)
-    note: str = Field(default="")  # optional user note (pre-wires post-MVP journal feature)
+    note: str = Field(
+        default=""
+    )  # optional user note (pre-wires post-MVP journal feature)

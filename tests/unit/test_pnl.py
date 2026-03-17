@@ -23,6 +23,7 @@ from app.pnl import (
 # calculate_weighted_avg_entry
 # ---------------------------------------------------------------------------
 
+
 class TestCalculateWeightedAvgEntry:
     def test_equal_sizes(self):
         # 0.1 @ 60000 + 0.1 @ 70000 = 65000
@@ -46,6 +47,7 @@ class TestCalculateWeightedAvgEntry:
 # ---------------------------------------------------------------------------
 # calculate_realized_pnl
 # ---------------------------------------------------------------------------
+
 
 class TestCalculateRealizedPnl:
     def test_profit(self):
@@ -73,6 +75,7 @@ class TestCalculateRealizedPnl:
 # format_pnl
 # ---------------------------------------------------------------------------
 
+
 class TestFormatPnl:
     def test_positive_with_sign(self):
         assert format_pnl(1234.56) == "+$1,234.56"
@@ -94,6 +97,7 @@ class TestFormatPnl:
 # format_pnl_pct
 # ---------------------------------------------------------------------------
 
+
 class TestFormatPnlPct:
     def test_positive(self):
         assert format_pnl_pct(8.33) == "+8.33%"
@@ -109,6 +113,7 @@ class TestFormatPnlPct:
 # pnl_color_class
 # ---------------------------------------------------------------------------
 
+
 class TestPnlColorClass:
     def test_positive(self):
         assert pnl_color_class(100.0) == "pnl-positive"
@@ -123,6 +128,7 @@ class TestPnlColorClass:
 # ---------------------------------------------------------------------------
 # calculate_snapshot
 # ---------------------------------------------------------------------------
+
 
 def make_pos(avg_entry=60000.0, amount=0.1, fees=0.0, stop_loss_price=None):
     return Position(
@@ -202,6 +208,7 @@ class TestCalculateSnapshot:
 # calculate_portfolio_summary
 # ---------------------------------------------------------------------------
 
+
 def make_snapshot(**kwargs) -> PositionSnapshot:
     defaults = dict(
         symbol="BTC/USD",
@@ -210,6 +217,7 @@ def make_snapshot(**kwargs) -> PositionSnapshot:
         current_price=65000,
         unrealized_pnl=500,
         unrealized_pnl_pct=8.33,
+        gross_pct=8.33,
         cost_basis=6000,
         current_value=6500,
         realized_pnl=0,
@@ -233,15 +241,34 @@ class TestCalculatePortfolioSummary:
         assert summary.position_count == 0
 
     def test_single_snapshot(self):
-        snap = make_snapshot(unrealized_pnl=500, realized_pnl=100, cost_basis=6000, current_value=6500, risk_pct=60)
+        snap = make_snapshot(
+            unrealized_pnl=500,
+            realized_pnl=100,
+            cost_basis=6000,
+            current_value=6500,
+            risk_pct=60,
+        )
         summary = calculate_portfolio_summary([snap])
         assert summary.total_unrealized_pnl == pytest.approx(500)
         assert summary.total_realized_pnl == pytest.approx(100)
         assert summary.position_count == 1
 
     def test_multiple_snapshots_aggregated(self):
-        s1 = make_snapshot(unrealized_pnl=500, realized_pnl=0, cost_basis=6000, current_value=6500, risk_pct=60)
-        s2 = make_snapshot(symbol="ETH/USD", unrealized_pnl=-200, realized_pnl=50, cost_basis=3000, current_value=2800, risk_pct=30)
+        s1 = make_snapshot(
+            unrealized_pnl=500,
+            realized_pnl=0,
+            cost_basis=6000,
+            current_value=6500,
+            risk_pct=60,
+        )
+        s2 = make_snapshot(
+            symbol="ETH/USD",
+            unrealized_pnl=-200,
+            realized_pnl=50,
+            cost_basis=3000,
+            current_value=2800,
+            risk_pct=30,
+        )
         summary = calculate_portfolio_summary([s1, s2])
         assert summary.total_unrealized_pnl == pytest.approx(300)
         assert summary.total_realized_pnl == pytest.approx(50)

@@ -20,6 +20,7 @@ COLUMNS = [
     ("value", "Value"),
     ("pnl", "Unrealized P&L"),
     ("pnl_pct", "P&L %"),
+    ("gross_pct", "Gross %"),
 ]
 
 
@@ -73,6 +74,7 @@ class PositionTable(Static):
         for snap in snapshots:
             pnl_str = format_pnl(snap.unrealized_pnl)
             pnl_pct_str = format_pnl_pct(snap.unrealized_pnl_pct)
+            gross_pct_str = format_pnl_pct(snap.gross_pct)
             row = (
                 snap.symbol,
                 f"{snap.total_amount:.6f}",
@@ -81,6 +83,7 @@ class PositionTable(Static):
                 f"${snap.current_value:,.2f}",
                 pnl_str,
                 pnl_pct_str,
+                gross_pct_str,
             )
 
             if snap.symbol in self._row_symbols:
