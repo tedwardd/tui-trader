@@ -1,0 +1,21 @@
+# Credentials and config live in ~/.config/tui-trader/ (XDG) — not in the repo
+.env
+
+# Database lives in ~/.local/share/tui-trader/ (XDG) — not in the repo
+trades.db
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Temp / editor
+.tmp/
+*.swp
+*.swo
+.DS_Store
