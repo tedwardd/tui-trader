@@ -225,6 +225,9 @@ class TradeApp(App):
     Header {
         background: $primary-darken-2;
     }
+    App.read-only Header {
+        background: darkred;
+    }
     """
 
     BINDINGS = [
@@ -370,6 +373,7 @@ class TradeApp(App):
 
         if self._read_only:
             lock = self._lock_info or {}
+            self.add_class("read-only")
             # Stamp the header subtitle as a permanent indicator — visible on
             # every screen without relying on widget layers or CSS display.
             self.sub_title = (
