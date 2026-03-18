@@ -61,19 +61,6 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Temporary startup diagnostics — writes to /tmp/tui_debug.log
-# Remove once lock detection is confirmed working.
-# ---------------------------------------------------------------------------
-import time as _time
-
-_DBG_PATH = "/tmp/tui_debug.log"
-
-
-def _dbg(msg: str) -> None:
-    with open(_DBG_PATH, "a") as _f:
-        _f.write(f"{_time.strftime('%H:%M:%S')} {msg}\n")
-
 
 # ---------------------------------------------------------------------------
 # CLI argument parsing
@@ -238,17 +225,6 @@ class TradeApp(App):
     Header {
         background: $primary-darken-2;
     }
-    #read-only-banner {
-        display: none;
-        dock: top;
-        background: $warning-darken-2;
-        color: $text;
-        content-align: center middle;
-        height: 1;
-    }
-    #read-only-banner.visible {
-        display: block;
-    }
     """
 
     BINDINGS = [
@@ -286,7 +262,6 @@ class TradeApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield Static("", id="read-only-banner")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -300,9 +275,6 @@ class TradeApp(App):
             except Exception as e:
                 log.error("cloud_sync: startup error — %s", e)
                 self._cloud_startup_error = str(e)
-            _dbg(
-                f"on_mount: _read_only={self._read_only} _cloud_session_id={self._cloud_session_id}"
-            )
 
         # Fetch full wallet balance via REST on startup so portfolio value and
         # risk % are correct from the first ticker update, before the private
@@ -346,21 +318,15 @@ class TradeApp(App):
         - Lock matches local session ID → crash recovery Path A: resume as owner
         - Lock held by other session → enter read-only mode
         """
-        _dbg("_setup_cloud_lock: calling check_lock()")
         lock = cloud_sync.check_lock()
-        _dbg(f"_setup_cloud_lock: lock={lock}")
 
         if lock is None:
             # No lock — acquire it
             session_id = str(uuid4())
             self._cloud_session_id = session_id
             cloud_sync.acquire_lock(session_id)
-            _dbg(f"_setup_cloud_lock: acquired lock session_id={session_id}")
         else:
             local_session_id = cloud_sync.load_local_session_id()
-            _dbg(
-                f"_setup_cloud_lock: local_session_id={local_session_id} lock_session_id={lock.get('session_id')}"
-            )
             if local_session_id and local_session_id == lock.get("session_id"):
                 # This machine owns the lock (crash recovery Path A)
                 log.info(
@@ -368,13 +334,11 @@ class TradeApp(App):
                     local_session_id,
                 )
                 self._cloud_session_id = local_session_id
-                _dbg("_setup_cloud_lock: crash recovery Path A — resuming as owner")
             else:
                 # A different session holds the lock — enter read-only mode
                 self._read_only = True
                 self._alert_manager.read_only = True
                 self._lock_info = lock
-                _dbg("_setup_cloud_lock: entering READ-ONLY mode")
                 log.info(
                     "cloud_sync: read-only mode — lock held by %s (session %s)",
                     lock.get("hostname"),
@@ -395,36 +359,6 @@ class TradeApp(App):
 
     def on_ready(self) -> None:
         """Register all screens after the app is ready."""
-        _dbg(f"on_ready: _read_only={self._read_only}")
-        if self._read_only:
-            lock = self._lock_info or {}
-            _dbg(f"on_ready: showing banner, lock={lock}")
-            try:
-                banner = self.query_one("#read-only-banner", Static)
-                banner.update(
-                    f"READ-ONLY  ·  Locked by {lock.get('hostname', 'unknown')} "
-                    f"since {lock.get('locked_at', 'unknown')}  ·  "
-                    "Close that session to enable trading here"
-                )
-                banner.display = True
-                _dbg(
-                    f"on_ready: banner.display={banner.display} banner.styles.display={banner.styles.display}"
-                )
-            except Exception as e:
-                _dbg(f"on_ready: banner error — {e}")
-            self.notify(
-                f"Read-only session — locked by {lock.get('hostname', 'unknown')} "
-                f"since {lock.get('locked_at', 'unknown')}",
-                severity="warning",
-                timeout=0,
-            )
-        elif hasattr(self, "_cloud_startup_error"):
-            self.notify(
-                f"Cloud sync error at startup: {self._cloud_startup_error}\n"
-                "Running in local-only mode.",
-                severity="error",
-                timeout=20,
-            )
 
         self.install_screen(DashboardScreen(), name="dashboard")
         self.install_screen(TradeScreen(side="buy"), name="trade_buy")
@@ -433,6 +367,31 @@ class TradeApp(App):
         self.install_screen(HistoryScreen(), name="history")
         self.install_screen(AlertsScreen(self._alert_manager), name="alerts")
         self.push_screen("dashboard")
+
+        if self._read_only:
+            lock = self._lock_info or {}
+            # Stamp the header subtitle as a permanent indicator — visible on
+            # every screen without relying on widget layers or CSS display.
+            self.sub_title = (
+                f"READ-ONLY  ·  Locked by {lock.get('hostname', 'unknown')} "
+                f"since {lock.get('locked_at', 'unknown')}"
+            )
+            # Toast fires after the first frame via call_after_refresh so
+            # there is an active screen to render it onto.
+            self.call_after_refresh(
+                self.notify,
+                f"Read-only session — {lock.get('hostname', 'unknown')} has this "
+                "session open. All write operations are disabled.",
+                severity="warning",
+                timeout=30,
+            )
+        elif hasattr(self, "_cloud_startup_error"):
+            self.call_after_refresh(
+                self.notify,
+                f"Cloud sync error: {self._cloud_startup_error} — running local-only.",
+                severity="error",
+                timeout=20,
+            )
 
     # ---------------------------------------------------------------------------
     # WebSocket event handlers — called by stream workers
