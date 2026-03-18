@@ -213,8 +213,17 @@ class TradeApp(App):
 
         # --- Cloud sync: download latest DB and acquire (or check) the lock ---
         if cloud_sync.is_configured():
-            await asyncio.to_thread(cloud_sync.sync_down)
-            await self._setup_cloud_lock()
+            try:
+                await asyncio.to_thread(cloud_sync.sync_down)
+                await self._setup_cloud_lock()
+            except Exception as e:
+                log.error("cloud_sync: startup error — %s", e)
+                self.notify(
+                    f"Cloud sync error at startup: {e}\n"
+                    "Running in local-only mode. Check logs for details.",
+                    severity="error",
+                    timeout=20,
+                )
 
         # --- Initialise local database (using the downloaded file if synced) ---
         db.init_db()

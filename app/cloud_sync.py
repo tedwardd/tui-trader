@@ -155,11 +155,16 @@ def check_lock() -> Optional[dict]:
         resp = client.get_object(Bucket=cfg.CLOUD_SYNC_BUCKET, Key=_lock_key())
         return json.loads(resp["Body"].read().decode())
     except Exception as e:
-        # NoSuchKey → no lock exists; any other error → treat as no lock but log
-        err_code = getattr(getattr(e, "response", None), "get", lambda *_: None)(
-            "Error", {}
-        ).get("Code", "")
-        if err_code != "NoSuchKey":
+        # Safely extract the S3 error code from a boto3 ClientError.
+        # Non-boto3 exceptions (network errors, TLS failures, etc.) have no
+        # "response" attribute — the original getattr chain returned None which
+        # then raised AttributeError on .get(), silently swallowing the error
+        # and causing lock detection to fail.
+        try:
+            code = e.response["Error"]["Code"]  # type: ignore[attr-defined]
+        except (AttributeError, KeyError, TypeError):
+            code = ""
+        if code != "NoSuchKey":
             log.warning("cloud_sync: could not read lock file: %s", e)
         return None
 
@@ -276,10 +281,11 @@ def sync_down() -> bool:
         return True
 
     except Exception as e:
-        err_code = getattr(getattr(e, "response", None), "get", lambda *_: None)(
-            "Error", {}
-        ).get("Code", "")
-        if err_code == "404" or err_code == "NoSuchKey":
+        try:
+            code = e.response["Error"]["Code"]  # type: ignore[attr-defined]
+        except (AttributeError, KeyError, TypeError):
+            code = ""
+        if code in ("404", "NoSuchKey"):
             log.info("cloud_sync: no remote DB found, using local")
         else:
             log.warning("cloud_sync: sync_down failed: %s", e)
