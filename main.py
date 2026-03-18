@@ -26,7 +26,6 @@ Keyboard shortcuts (global):
 """
 
 import argparse
-import asyncio
 import logging
 import sys
 from typing import Optional
@@ -277,38 +276,21 @@ class TradeApp(App):
         yield Static("", id="read-only-banner")
         yield Footer()
 
-    async def on_mount(self) -> None:
+    def on_mount(self) -> None:
         """Initialise DB, load state, start WebSocket workers."""
 
         # --- Cloud sync: download latest DB and acquire (or check) the lock ---
+        # Called synchronously — S3 calls are fast (~100-200ms) and must complete
+        # before init_db() so we boot from the latest cloud copy. Using
+        # asyncio.to_thread here caused Textual's event loop to schedule the work
+        # in a way that wasn't guaranteed to complete before on_mount returned.
         if cloud_sync.is_configured():
             try:
-                await asyncio.to_thread(cloud_sync.sync_down)
-                await self._setup_cloud_lock()
+                cloud_sync.sync_down()
+                self._setup_cloud_lock()
             except Exception as e:
                 log.error("cloud_sync: startup error — %s", e)
-                self.notify(
-                    f"Cloud sync error at startup: {e}\n"
-                    "Running in local-only mode. Check logs for details.",
-                    severity="error",
-                    timeout=20,
-                )
-
-        # --- Initialise local database (using the downloaded file if synced) ---
-        db.init_db()
-        self._alert_manager.reload()
-        self._open_positions = db.get_open_positions()
-
-        # Show read-only banner after DB is ready (so screens can be queried)
-        if self._read_only:
-            lock = self._lock_info or {}
-            banner = self.query_one("#read-only-banner", Static)
-            banner.update(
-                f"READ-ONLY  ·  Locked by {lock.get('hostname', 'unknown')} "
-                f"since {lock.get('locked_at', 'unknown')}  ·  "
-                "Close that session to enable trading here"
-            )
-            banner.add_class("visible")
+                self._cloud_startup_error = str(e)
 
         # Fetch full wallet balance via REST on startup so portfolio value and
         # risk % are correct from the first ticker update, before the private
@@ -343,21 +325,22 @@ class TradeApp(App):
             name="private",
         )
 
-    async def _setup_cloud_lock(self) -> None:
+    def _setup_cloud_lock(self) -> None:
         """
         Determine whether this session owns the cloud lock or should be read-only.
+        Called synchronously from on_mount before init_db().
 
         - No lock in cloud       → acquire it, proceed normally
         - Lock matches local session ID → crash recovery Path A: resume as owner
         - Lock held by other session → enter read-only mode
         """
-        lock = await asyncio.to_thread(cloud_sync.check_lock)
+        lock = cloud_sync.check_lock()
 
         if lock is None:
             # No lock — acquire it
             session_id = str(uuid4())
             self._cloud_session_id = session_id
-            await asyncio.to_thread(cloud_sync.acquire_lock, session_id)
+            cloud_sync.acquire_lock(session_id)
         else:
             local_session_id = cloud_sync.load_local_session_id()
             if local_session_id and local_session_id == lock.get("session_id"):
@@ -382,8 +365,8 @@ class TradeApp(App):
         """Clean up WebSocket connections and release cloud lock on exit."""
         await stream_manager.close()
         if cloud_sync.is_configured() and self._cloud_session_id:
-            await asyncio.to_thread(cloud_sync.sync_up)
-            await asyncio.to_thread(cloud_sync.release_lock, self._cloud_session_id)
+            cloud_sync.sync_up()
+            cloud_sync.release_lock(self._cloud_session_id)
             cloud_sync.clear_local_session_id()
 
     # ---------------------------------------------------------------------------
@@ -392,6 +375,26 @@ class TradeApp(App):
 
     def on_ready(self) -> None:
         """Register all screens after the app is ready."""
+        # Show read-only banner or cloud sync error now that the UI is fully
+        # initialised. Doing this in on_mount was too early — Textual's
+        # notification system requires screens to be present.
+        if self._read_only:
+            lock = self._lock_info or {}
+            banner = self.query_one("#read-only-banner", Static)
+            banner.update(
+                f"READ-ONLY  ·  Locked by {lock.get('hostname', 'unknown')} "
+                f"since {lock.get('locked_at', 'unknown')}  ·  "
+                "Close that session to enable trading here"
+            )
+            banner.add_class("visible")
+        elif hasattr(self, "_cloud_startup_error"):
+            self.notify(
+                f"Cloud sync error at startup: {self._cloud_startup_error}\n"
+                "Running in local-only mode.",
+                severity="error",
+                timeout=20,
+            )
+
         self.install_screen(DashboardScreen(), name="dashboard")
         self.install_screen(TradeScreen(side="buy"), name="trade_buy")
         self.install_screen(TradeScreen(side="sell"), name="trade_sell")
