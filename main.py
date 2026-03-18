@@ -81,7 +81,76 @@ def _parse_args() -> argparse.Namespace:
             "Use this when a previous session crashed without releasing the lock."
         ),
     )
+    parser.add_argument(
+        "--check-sync",
+        action="store_true",
+        help="Print cloud sync status and exit (useful for diagnosing lock issues).",
+    )
     return parser.parse_args()
+
+
+def _handle_check_sync() -> None:
+    """Print cloud sync diagnostics to stdout and exit."""
+    import json
+
+    print("=== tui-trader cloud sync diagnostics ===")
+    print()
+
+    configured = cloud_sync.is_configured()
+    print(f"is_configured : {configured}")
+    if not configured:
+        from app import config as cfg
+
+        print()
+        print("One or more required vars are missing or CLOUD_SYNC_ENABLED=false.")
+        print(f"  CLOUD_SYNC_ENABLED     = {cfg.CLOUD_SYNC_ENABLED}")
+        print(
+            f"  CLOUD_SYNC_ENDPOINT_URL= {cfg.CLOUD_SYNC_ENDPOINT_URL or '(not set)'}"
+        )
+        print(f"  CLOUD_SYNC_BUCKET      = {cfg.CLOUD_SYNC_BUCKET or '(not set)'}")
+        print(
+            f"  CLOUD_SYNC_KEY_ID      = {'(set)' if cfg.CLOUD_SYNC_KEY_ID else '(not set)'}"
+        )
+        print(
+            f"  CLOUD_SYNC_KEY_SECRET  = {'(set)' if cfg.CLOUD_SYNC_KEY_SECRET else '(not set)'}"
+        )
+        print(f"  CLOUD_SYNC_OBJECT_KEY  = {cfg.CLOUD_SYNC_OBJECT_KEY}")
+        sys.exit(0)
+
+    from app import config as cfg
+
+    print(f"endpoint      : {cfg.CLOUD_SYNC_ENDPOINT_URL or '(default AWS)'}")
+    print(f"bucket        : {cfg.CLOUD_SYNC_BUCKET}")
+    print(f"object key    : {cfg.CLOUD_SYNC_OBJECT_KEY}")
+    print(f"lock key      : {cfg.CLOUD_SYNC_OBJECT_KEY}.lock")
+    print()
+
+    local_session = cloud_sync.load_local_session_id()
+    print(f"local session file : {cloud_sync._session_file()}")
+    print(f"local session ID   : {local_session or '(none)'}")
+    print()
+
+    print("checking cloud lock...")
+    try:
+        lock = cloud_sync.check_lock()
+        if lock is None:
+            print("cloud lock     : NOT PRESENT (no lock file found in bucket)")
+        else:
+            print("cloud lock     : PRESENT")
+            print(json.dumps(lock, indent=2))
+            if local_session and local_session == lock.get("session_id"):
+                print()
+                print("→ This machine owns the lock (crash recovery Path A)")
+            else:
+                print()
+                print(
+                    "→ Lock is held by a DIFFERENT session — this machine would be READ-ONLY"
+                )
+    except Exception as e:
+        print(f"cloud lock     : ERROR reading lock file — {e}")
+
+    print()
+    sys.exit(0)
 
 
 def _handle_force_unlock() -> None:
@@ -559,6 +628,8 @@ class TradeApp(App):
 
 if __name__ == "__main__":
     args = _parse_args()
+    if args.check_sync:
+        _handle_check_sync()  # always exits
     if args.force_unlock:
         _handle_force_unlock()  # returns on CONFIRM, exits otherwise
     TradeApp().run()
