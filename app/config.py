@@ -41,6 +41,7 @@ CONFIG_DIR = get_config_dir()
 DATA_DIR = get_data_dir()
 CONFIG_FILE = CONFIG_DIR / "config.env"
 DATABASE_PATH = DATA_DIR / "trades.db"
+PAPER_DATABASE_PATH = DATA_DIR / "paper_trades.db"
 
 
 # ---------------------------------------------------------------------------

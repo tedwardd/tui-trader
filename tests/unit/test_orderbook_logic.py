@@ -14,6 +14,7 @@ from screens.orderbook import (
     find_walls,
     build_depth_bars,
     annotate_levels,
+    group_levels,
 )
 
 
@@ -176,3 +177,68 @@ class TestAnnotateLevels:
         annotations = annotate_levels(levels, entry_price=None, stop_price=74950.0)
         # Stop at 74950 sits between index 2 (75000) and 3 (74900)
         assert annotations["stop"] == 3
+
+
+# ---------------------------------------------------------------------------
+# group_levels
+# ---------------------------------------------------------------------------
+
+class TestGroupLevels:
+    def test_zero_tick_returns_original(self):
+        levels = [[80100, 1.0], [80050, 0.5], [80000, 0.3]]
+        assert group_levels(levels, 0) == levels
+
+    def test_negative_tick_returns_original(self):
+        levels = [[80100, 1.0], [80050, 0.5]]
+        assert group_levels(levels, -10) == levels
+
+    def test_empty_returns_empty(self):
+        assert group_levels([], 100) == []
+
+    def test_no_merging_when_levels_already_bucketed(self):
+        # Each price is already a multiple of 100 — no merging
+        levels = [[80200, 1.0], [80100, 2.0], [80000, 3.0]]
+        result = group_levels(levels, 100)
+        assert len(result) == 3
+
+    def test_merges_levels_into_buckets(self):
+        # 80099 and 80050 both floor to 80000 under tick_size=100
+        levels = [[80099, 1.0], [80050, 0.5], [79999, 0.3]]
+        result = group_levels(levels, 100)
+        # 80099 → bucket 80000, 80050 → bucket 80000, 79999 → bucket 79900
+        assert len(result) == 2
+        buckets = {r[0]: r[1] for r in result}
+        assert buckets[80000.0] == pytest.approx(1.5)
+        assert buckets[79900.0] == pytest.approx(0.3)
+
+    def test_amounts_summed_within_bucket(self):
+        levels = [[80010, 1.0], [80005, 2.0], [80001, 3.0]]  # all floor to 80000
+        result = group_levels(levels, 100)
+        assert len(result) == 1
+        assert result[0][1] == pytest.approx(6.0)
+
+    def test_descending_order_preserved_for_bids(self):
+        # Bids are descending
+        levels = [[80150, 1.0], [80090, 0.5], [79950, 0.8], [79910, 0.2]]
+        result = group_levels(levels, 100)
+        prices = [r[0] for r in result]
+        assert prices == sorted(prices, reverse=True)
+
+    def test_ascending_order_preserved_for_asks(self):
+        # Asks are ascending
+        levels = [[80010, 0.2], [80060, 0.3], [80110, 0.5], [80190, 1.0]]
+        result = group_levels(levels, 100)
+        prices = [r[0] for r in result]
+        assert prices == sorted(prices)
+
+    def test_single_level_returns_bucketed_price(self):
+        result = group_levels([[80075, 2.0]], 100)
+        assert len(result) == 1
+        assert result[0][0] == pytest.approx(80000.0)
+        assert result[0][1] == pytest.approx(2.0)
+
+    def test_reduces_number_of_rows(self):
+        # 10 levels with tick_size=50 should produce fewer rows
+        levels = [[80000 - i * 10, 1.0] for i in range(10)]  # 80000 to 79910 in $10 steps
+        result = group_levels(levels, 50)
+        assert len(result) < len(levels)

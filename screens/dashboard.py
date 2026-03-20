@@ -22,6 +22,16 @@ from widgets.risk_panel import RiskPanel
 from app.pnl import PositionSnapshot, PortfolioSummary
 
 
+class IndicatorsBar(Static):
+    DEFAULT_CSS = """
+    IndicatorsBar {
+        height: 1;
+        padding: 0 1;
+        color: $text-muted;
+    }
+    """
+
+
 class DashboardScreen(Screen):
     """Main dashboard: positions, P&L, and risk overview."""
 
@@ -56,6 +66,7 @@ class DashboardScreen(Screen):
         yield Header()
         with Vertical():
             yield PnlSummary(id="pnl-summary")
+            yield IndicatorsBar("", id="indicators-bar")
             yield Static("● Active Positions", classes="section-title")
             yield PositionTable(id="position-table")
             yield Static("● Risk Management", classes="section-title")
@@ -76,6 +87,39 @@ class DashboardScreen(Screen):
         self.query_one(PositionTable).update_snapshots(snapshots)
         self.query_one(PnlSummary).update_summary(summary)
         self.query_one(RiskPanel).update_snapshots(snapshots)
+
+    def update_indicators(
+        self,
+        vwap: float | None,
+        rsi: float | None,
+        atr: float | None,
+        current_price: float = 0.0,
+    ) -> None:
+        """Update the indicators bar with latest VWAP, RSI, and ATR values."""
+        if vwap is not None:
+            vwap_color = "green" if vwap < current_price else "red"
+            vwap_str = f"[{vwap_color}]VWAP: ${vwap:,.2f}[/{vwap_color}]"
+        else:
+            vwap_str = "VWAP: —"
+        if rsi is not None:
+            if rsi >= 70:
+                rsi_color = "red"
+            elif rsi >= 60:
+                rsi_color = "dark_orange"
+            elif rsi <= 30:
+                rsi_color = "green"
+            elif rsi <= 40:
+                rsi_color = "dark_sea_green"
+            else:
+                rsi_color = None
+            rsi_val = f"RSI(14): {rsi:.1f}"
+            rsi_str = f"[{rsi_color}]{rsi_val}[/{rsi_color}]" if rsi_color else rsi_val
+        else:
+            rsi_str = "RSI(14): —"
+        atr_str = f"ATR(14): ${atr:,.2f}" if atr is not None else "ATR(14): —"
+        self.query_one("#indicators-bar", IndicatorsBar).update(
+            f"{vwap_str}  ·  {rsi_str}  ·  {atr_str}"
+        )
 
     def on_mount(self) -> None:
         self._snapshots: list[PositionSnapshot] = []

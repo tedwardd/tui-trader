@@ -30,6 +30,12 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# Fetch significantly more levels than the display depth so that grouping
+# into coarser buckets can still fill ORDER_BOOK_DEPTH display rows.
+# 500 is a valid Kraken WebSocket depth and comfortably exceeds any display
+# depth the user might configure.
+_ORDERBOOK_FETCH_DEPTH = 500
+
 
 class StreamManager:
     """
@@ -102,11 +108,11 @@ class StreamManager:
         Calls app.on_orderbook_update(orderbook) on each update.
         """
         exchange = self._get_exchange()
-        log.info("orderbook_worker: starting for %s (depth=%d)", symbol, ORDER_BOOK_DEPTH)
+        log.info("orderbook_worker: starting for %s (fetch depth=%d, display depth=%d)", symbol, _ORDERBOOK_FETCH_DEPTH, ORDER_BOOK_DEPTH)
 
         while True:
             try:
-                ob = await exchange.watch_order_book(symbol, ORDER_BOOK_DEPTH)
+                ob = await exchange.watch_order_book(symbol, _ORDERBOOK_FETCH_DEPTH)
                 app.on_orderbook_update(ob)
             except ccxtpro.AuthenticationError as e:
                 log.error("orderbook_worker: auth error — %s", e)

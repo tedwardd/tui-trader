@@ -13,8 +13,15 @@ from sqlmodel import SQLModel, Session, create_engine, select
 from app.models import Position, Trade, PriceAlert
 from app.config import DATABASE_PATH
 
-DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
-engine = create_engine(DATABASE_URL, echo=False)
+_db_path = DATABASE_PATH
+engine = create_engine(f"sqlite:///{_db_path}", echo=False)
+
+
+def configure_engine(path) -> None:
+    """Switch the database to a different file. Must be called before init_db()."""
+    global engine, _db_path
+    _db_path = path
+    engine = create_engine(f"sqlite:///{path}", echo=False)
 
 
 def init_db() -> None:
@@ -25,14 +32,16 @@ def init_db() -> None:
 
 def _migrate_add_stop_loss_price() -> None:
     """
-    Add stop_loss_price column to position table if it doesn't exist.
-    Handles databases created before this column was introduced.
+    Add stop_loss_price and stop_source columns to position table if they don't exist.
+    Handles databases created before these columns were introduced.
     """
     import sqlite3
-    with sqlite3.connect(DATABASE_PATH) as conn:
+    with sqlite3.connect(_db_path) as conn:
         cols = [row[1] for row in conn.execute("PRAGMA table_info(position)")]
         if "stop_loss_price" not in cols:
             conn.execute("ALTER TABLE position ADD COLUMN stop_loss_price REAL")
+        if "stop_source" not in cols:
+            conn.execute("ALTER TABLE position ADD COLUMN stop_source TEXT")
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +97,7 @@ def update_position(position: Position) -> Position:
         db_position.status = position.status
         db_position.closed_at = position.closed_at
         db_position.stop_loss_price = position.stop_loss_price
+        db_position.stop_source = position.stop_source
         session.add(db_position)
         session.commit()
         session.refresh(db_position)
@@ -95,11 +105,12 @@ def update_position(position: Position) -> Position:
 
 
 def set_stop_loss(position_id: int, stop_price: Optional[float]) -> None:
-    """Set or clear the manual stop-loss price for a position."""
+    """Set or clear a manual stop-loss price for a position."""
     with Session(engine) as session:
         pos = session.get(Position, position_id)
         if pos:
             pos.stop_loss_price = stop_price
+            pos.stop_source = "manual" if stop_price is not None else None
             session.add(pos)
             session.commit()
 

@@ -143,6 +143,12 @@ def fetch_closed_orders(symbol: Optional[str] = None, limit: int = 100) -> list[
 # ---------------------------------------------------------------------------
 
 
+def fetch_ohlcv(symbol: str, timeframe: str = "1d", limit: int = 20) -> list[list[float]]:
+    """Fetch OHLCV candles from Kraken. Returns list of [ts, o, h, l, c, v], oldest-first."""
+    exchange = get_exchange()
+    return exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+
+
 def fetch_markets() -> list[dict]:
     """Fetch all available markets on Kraken."""
     exchange = get_exchange()

@@ -26,8 +26,10 @@ Keyboard shortcuts (global):
 """
 
 import argparse
+import collections
 import logging
 import sys
+import time
 from typing import Optional
 from uuid import uuid4
 
@@ -35,7 +37,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Static
 from textual.reactive import reactive
 
-from app.config import DEFAULT_SYMBOL, DEFAULT_STOP_LOSS_PCT
+from app.config import DEFAULT_SYMBOL, DEFAULT_STOP_LOSS_PCT, PAPER_DATABASE_PATH
 from app import database as db
 from app import cloud_sync
 from app.models import Position
@@ -48,6 +50,7 @@ from app.alerts import AlertManager
 from app.notifications import send_notification
 from app.streams import stream_manager
 from app import exchange as kraken_rest
+from app.indicators import compute_atr, compute_rsi
 
 from screens.dashboard import DashboardScreen
 from screens.trade import TradeScreen
@@ -84,6 +87,14 @@ def _parse_args() -> argparse.Namespace:
         "--check-sync",
         action="store_true",
         help="Print cloud sync status and exit (useful for diagnosing lock issues).",
+    )
+    parser.add_argument(
+        "--paper",
+        action="store_true",
+        help=(
+            "Run in paper trading mode — orders are simulated locally and never "
+            "submitted to the exchange. Uses a separate database (paper_trades.db)."
+        ),
     )
     return parser.parse_args()
 
@@ -228,6 +239,10 @@ class TradeApp(App):
     App.read-only Header {
         background: darkred;
     }
+    App.paper-mode Header {
+        background: darkorange;
+        color: #000000;
+    }
     """
 
     BINDINGS = [
@@ -248,8 +263,9 @@ class TradeApp(App):
     _asset_balances: dict[str, float] = {}  # all non-USD holdings: {"BTC": 0.5, ...}
     _open_positions: list[Position] = []
 
-    def __init__(self) -> None:
+    def __init__(self, paper_mode: bool = False) -> None:
         super().__init__()
+        self.paper_mode: bool = paper_mode
         self._symbol = DEFAULT_SYMBOL
         self._prices: dict[str, float] = {}  # last known price per symbol
         self._asset_balances = {}
@@ -258,6 +274,13 @@ class TradeApp(App):
         self._read_only: bool = False
         self._cloud_session_id: Optional[str] = None
         self._lock_info: Optional[dict] = None
+        # Indicator state
+        self._atr: float | None = None
+        self._rsi: float | None = None
+        self._vwap: float | None = None
+        self._hourly_closes: collections.deque = collections.deque(maxlen=100)
+        self._candle_open_ts: int = 0
+        self._candle_close: float = 0.0
 
     # ---------------------------------------------------------------------------
     # App lifecycle
@@ -270,14 +293,20 @@ class TradeApp(App):
     def on_mount(self) -> None:
         """Initialise DB, load state, start WebSocket workers."""
 
-        # --- Cloud sync: download latest DB and acquire (or check) the lock ---
-        if cloud_sync.is_configured():
-            try:
-                cloud_sync.sync_down()
-                self._setup_cloud_lock()
-            except Exception as e:
-                log.error("cloud_sync: startup error — %s", e)
-                self._cloud_startup_error = str(e)
+        # --- Paper trading mode: use a separate database, skip cloud sync ---
+        if self.paper_mode:
+            db.configure_engine(PAPER_DATABASE_PATH)
+            db.init_db()
+            self._open_positions = db.get_open_positions()
+        else:
+            # --- Cloud sync: download latest DB and acquire (or check) the lock ---
+            if cloud_sync.is_configured():
+                try:
+                    cloud_sync.sync_down()
+                    self._setup_cloud_lock()
+                except Exception as e:
+                    log.error("cloud_sync: startup error — %s", e)
+                    self._cloud_startup_error = str(e)
 
         # Fetch full wallet balance via REST on startup so portfolio value and
         # risk % are correct from the first ticker update, before the private
@@ -295,6 +324,20 @@ class TradeApp(App):
         except Exception as e:
             log.warning("Could not fetch initial balance: %s", e)
 
+        try:
+            ohlcv = kraken_rest.fetch_ohlcv(self._symbol, timeframe="1d", limit=20)
+            self._atr = compute_atr(ohlcv)
+        except Exception as e:
+            log.warning("Could not fetch OHLCV for ATR: %s", e)
+
+        try:
+            ohlcv_1h = kraken_rest.fetch_ohlcv(self._symbol, timeframe="1h", limit=30)
+            closes = [c[4] for c in ohlcv_1h]
+            self._hourly_closes = collections.deque(closes, maxlen=100)
+            self._rsi = compute_rsi(list(self._hourly_closes))
+        except Exception as e:
+            log.warning("Could not fetch hourly OHLCV for RSI: %s", e)
+
         # Start WebSocket workers
         self.run_worker(
             stream_manager.ticker_worker(self, self._symbol),
@@ -311,6 +354,8 @@ class TradeApp(App):
             exclusive=False,
             name="private",
         )
+
+        self.set_interval(30 * 60, self._refresh_atr)
 
     def _setup_cloud_lock(self) -> None:
         """
@@ -348,10 +393,19 @@ class TradeApp(App):
                     lock.get("session_id"),
                 )
 
+    async def _refresh_atr(self) -> None:
+        """Refresh ATR every 30 minutes from daily OHLCV data."""
+        import asyncio
+        try:
+            ohlcv = await asyncio.to_thread(kraken_rest.fetch_ohlcv, self._symbol, "1d", 20)
+            self._atr = compute_atr(ohlcv)
+        except Exception as e:
+            log.warning("ATR refresh failed: %s", e)
+
     async def on_unmount(self) -> None:
         """Clean up WebSocket connections and release cloud lock on exit."""
         await stream_manager.close()
-        if cloud_sync.is_configured() and self._cloud_session_id:
+        if not self.paper_mode and cloud_sync.is_configured() and self._cloud_session_id:
             cloud_sync.sync_up()
             cloud_sync.release_lock(self._cloud_session_id)
             cloud_sync.clear_local_session_id()
@@ -370,6 +424,17 @@ class TradeApp(App):
         self.install_screen(HistoryScreen(), name="history")
         self.install_screen(AlertsScreen(self._alert_manager), name="alerts")
         self.push_screen("dashboard")
+
+        if self.paper_mode:
+            self.add_class("paper-mode")
+            self.sub_title = f"PAPER TRADING  ·  {DEFAULT_SYMBOL}  ·  No real orders will be placed"
+            self.call_after_refresh(
+                self.notify,
+                "Paper trading mode — orders are simulated and never sent to Kraken. "
+                f"Data stored in paper_trades.db.",
+                severity="warning",
+                timeout=15,
+            )
 
         if self._read_only:
             lock = self._lock_info or {}
@@ -412,6 +477,18 @@ class TradeApp(App):
 
         self._current_price = price
         self._prices[self._symbol] = price
+
+        hour_ts = int(time.time()) // 3600
+        if self._candle_open_ts == 0:
+            self._candle_open_ts = hour_ts
+        if hour_ts > self._candle_open_ts:
+            self._hourly_closes.append(self._candle_close)
+            self._rsi = compute_rsi(list(self._hourly_closes))
+            self._candle_open_ts = hour_ts
+        self._candle_close = price
+
+        raw_vwap = ticker.get("vwap")
+        self._vwap = float(raw_vwap) if raw_vwap else None
 
         # Evaluate price alerts
         self._alert_manager.evaluate(self._symbol, price)
@@ -536,6 +613,7 @@ class TradeApp(App):
             # calling query_one on an inactive screen raises NoMatches.
             if self.screen is dashboard:
                 dashboard.update_positions(snapshots, summary)
+                dashboard.update_indicators(self._vwap, self._rsi, self._atr, self._current_price)
         except Exception:
             pass
 
@@ -629,4 +707,4 @@ if __name__ == "__main__":
         _handle_check_sync()  # always exits
     if args.force_unlock:
         _handle_force_unlock()  # returns on CONFIRM, exits otherwise
-    TradeApp().run()
+    TradeApp(paper_mode=args.paper).run()

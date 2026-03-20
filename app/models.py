@@ -33,6 +33,8 @@ class Position(SQLModel, table=True):
 
     # Stop-loss — None means use the default % from config
     stop_loss_price: Optional[float] = Field(default=None)
+    # How the stop was set: "atr" | "manual" | None (default %)
+    stop_source: Optional[str] = Field(default=None)
 
     # Status
     status: str = Field(default="open")  # "open" | "closed"

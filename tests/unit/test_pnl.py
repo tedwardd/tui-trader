@@ -224,6 +224,7 @@ def make_snapshot(**kwargs) -> PositionSnapshot:
         suggested_stop_price=58800,
         stop_loss_pct=2.0,
         stop_is_manual=False,
+        stop_source=None,
         portfolio_value_usd=10000,
         risk_pct=60.0,
     )

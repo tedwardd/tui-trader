@@ -83,12 +83,12 @@ class RiskPanel(Static):
             else:
                 risk_class = "risk-low"
 
-            # [M] indicator for manually set stops
-            stop_label = (
-                f"${snap.suggested_stop_price:,.2f} [M]"
-                if snap.stop_is_manual
-                else f"${snap.suggested_stop_price:,.2f}"
-            )
+            if snap.stop_source == "atr":
+                stop_label = f"${snap.suggested_stop_price:,.2f} [A]"
+            elif snap.stop_source == "manual":
+                stop_label = f"${snap.suggested_stop_price:,.2f} [M]"
+            else:
+                stop_label = f"${snap.suggested_stop_price:,.2f}"
 
             row = (
                 snap.symbol,

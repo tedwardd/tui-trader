@@ -21,6 +21,8 @@ from app import cloud_sync
 from app.models import Position, Trade
 from app.pnl import calculate_weighted_avg_entry
 
+_ATR_MULTIPLIER = 1.5  # stop placed this many ATRs below avg entry
+
 
 class TradeScreen(Screen):
     """
@@ -161,8 +163,21 @@ class TradeScreen(Screen):
     ) -> None:
         """Blocking REST call — runs in a thread worker."""
         try:
-            # Place order via REST
-            if side == "buy":
+            # Place order via REST (or simulate it in paper trading mode)
+            if getattr(self.app, "paper_mode", False):
+                from app import paper_exchange
+                live = self._current_price or 0.0
+                if side == "buy":
+                    if order_type == "market":
+                        order = paper_exchange.place_market_buy(symbol, amount, live)
+                    else:
+                        order = paper_exchange.place_limit_buy(symbol, amount, float(price))  # type: ignore[arg-type]
+                else:
+                    if order_type == "market":
+                        order = paper_exchange.place_market_sell(symbol, amount, live)
+                    else:
+                        order = paper_exchange.place_limit_sell(symbol, amount, float(price))  # type: ignore[arg-type]
+            elif side == "buy":
                 if order_type == "market":
                     order = exchange.place_market_buy(symbol, amount)
                 else:
@@ -200,6 +215,7 @@ class TradeScreen(Screen):
 
             # Update local position tracking
             if side == "buy":
+                atr = getattr(self.app, "_atr", None)
                 self._record_buy(
                     symbol,
                     filled_amount,
@@ -208,6 +224,7 @@ class TradeScreen(Screen):
                     fee_currency,
                     order_id,
                     order_type,
+                    atr,
                 )
             else:
                 self._record_sell(
@@ -228,8 +245,11 @@ class TradeScreen(Screen):
             self.app.call_from_thread(self.app.reload_positions)
             # Push the updated DB to the cloud so a crash between here and
             # clean shutdown doesn't lose this trade from the cloud copy.
-            if cloud_sync.is_configured() and getattr(
-                self.app, "_cloud_session_id", None
+            # (Skipped in paper trading mode — paper DB is never synced to cloud.)
+            if (
+                not getattr(self.app, "paper_mode", False)
+                and cloud_sync.is_configured()
+                and getattr(self.app, "_cloud_session_id", None)
             ):
                 cloud_sync.sync_up()
 
@@ -261,20 +281,27 @@ class TradeScreen(Screen):
         fee_currency: str,
         order_id: str,
         order_type: str,
+        atr: float | None = None,
     ) -> None:
         """Create or update a local Position and record the Trade."""
         existing = db.get_position_by_symbol(symbol)
 
         if existing:
             existing.add_to_position(amount, price, fee)
+            if atr is not None:
+                existing.stop_loss_price = existing.avg_entry_price - _ATR_MULTIPLIER * atr
+                existing.stop_source = "atr"
             position = db.update_position(existing)
         else:
+            stop_price = (price - _ATR_MULTIPLIER * atr) if atr is not None else None
             position = db.save_position(
                 Position(
                     symbol=symbol,
                     avg_entry_price=price,
                     total_amount=amount,
                     total_fees_paid=fee,
+                    stop_loss_price=stop_price,
+                    stop_source="atr" if atr is not None else None,
                 )
             )
 

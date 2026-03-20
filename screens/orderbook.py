@@ -24,6 +24,8 @@ _BAR_WIDTH = 12
 _BAR_CHAR = "█"
 # How many times the average level size a level must be to count as a wall
 _WALL_MULTIPLIER = 2.5
+# Available grouping tick sizes in dollars (0 = no grouping / raw levels)
+_TICK_SIZES = [0, 1, 5, 10, 25, 50, 100, 500]
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +142,33 @@ def annotate_levels(
     return annotations
 
 
+def group_levels(
+    levels: list[list[float]],
+    tick_size: float,
+) -> list[list[float]]:
+    """
+    Aggregate order book levels into price buckets of size tick_size.
+
+    Each price is floored to the nearest multiple of tick_size and amounts
+    within the same bucket are summed. The result preserves the original
+    sort order (descending for bids, ascending for asks).
+
+    tick_size <= 0 returns the original list unchanged.
+    """
+    import math
+
+    if tick_size <= 0 or not levels:
+        return levels
+
+    buckets: dict[float, float] = {}
+    for price, amount in levels:
+        bucket = math.floor(price / tick_size) * tick_size
+        buckets[bucket] = buckets.get(bucket, 0.0) + amount
+
+    descending = levels[0][0] > levels[-1][0]
+    return [[p, a] for p, a in sorted(buckets.items(), reverse=descending)]
+
+
 # ---------------------------------------------------------------------------
 # Screen
 # ---------------------------------------------------------------------------
@@ -152,6 +181,8 @@ class OrderBookScreen(Screen):
 
     BINDINGS = [
         ("escape", "app.pop_screen", "Back"),
+        ("[", "decrease_grouping", "Finer"),
+        ("]", "increase_grouping", "Coarser"),
     ]
 
     DEFAULT_CSS = """
@@ -191,6 +222,9 @@ class OrderBookScreen(Screen):
         super().__init__(**kwargs)
         self._entry_price: Optional[float] = None
         self._stop_price: Optional[float] = None
+        self._tick_idx: int = 0  # index into _TICK_SIZES; 0 = no grouping
+        self._last_symbol: str = ""
+        self._last_orderbook: Optional[dict] = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -216,18 +250,43 @@ class OrderBookScreen(Screen):
         Refresh the order book display with the latest data.
         Called by the app on every WebSocket orderbook update.
         """
-        bids: list[list[float]] = orderbook.get("bids", [])[:ORDER_BOOK_DEPTH]
-        asks: list[list[float]] = orderbook.get("asks", [])[:ORDER_BOOK_DEPTH]
+        self._last_symbol = symbol
+        self._last_orderbook = orderbook
+        self._render_orderbook()
 
+    def _render_orderbook(self) -> None:
+        """Re-render using the last received data and current tick size."""
+        if not self._last_orderbook:
+            return
+        tick = _TICK_SIZES[self._tick_idx]
+        bids: list[list[float]] = group_levels(
+            self._last_orderbook.get("bids", []), tick
+        )[:ORDER_BOOK_DEPTH]
+        asks: list[list[float]] = group_levels(
+            self._last_orderbook.get("asks", []), tick
+        )[:ORDER_BOOK_DEPTH]
         self._render_side("bids-side", bids, is_bid=True)
         self._render_side("asks-side", asks, is_bid=False)
-        self._update_info_bar(symbol, bids, asks)
+        self._update_info_bar(self._last_symbol, bids, asks, tick)
+
+    def action_increase_grouping(self) -> None:
+        """Coarsen the price buckets (] key)."""
+        if self._tick_idx < len(_TICK_SIZES) - 1:
+            self._tick_idx += 1
+            self._render_orderbook()
+
+    def action_decrease_grouping(self) -> None:
+        """Finer price buckets / back to raw levels ([ key)."""
+        if self._tick_idx > 0:
+            self._tick_idx -= 1
+            self._render_orderbook()
 
     def _update_info_bar(
         self,
         symbol: str,
         bids: list[list[float]],
         asks: list[list[float]],
+        tick_size: float = 0,
     ) -> None:
         """Update the combined spread + imbalance info bar."""
         bar = self.query_one("#info-bar", Static)
@@ -256,13 +315,23 @@ class OrderBookScreen(Screen):
             ratio_str = f"{ratio:.2f}x"
             ratio_color = "yellow"
 
+        tob_ratio = calculate_imbalance_ratio(bids[:3], asks[:3])
+        if tob_ratio == 0:
+            tob_str = "—"
+        else:
+            tob_color = "green" if tob_ratio >= 1.5 else ("red" if tob_ratio <= 0.67 else "yellow")
+            tob_str = f"[{tob_color}]{tob_ratio:.2f}x[/{tob_color}]"
+
+        grouping_str = f"  │  Grouped: ${tick_size:g}" if tick_size > 0 else ""
+
         bar.update(
             f"{symbol}  │  "
             f"Bid: [green]${best_bid:,.2f}[/green]  "
             f"Ask: [red]${best_ask:,.2f}[/red]  "
             f"Mid: ${mid:,.2f}  "
             f"Spread: ${spread:,.2f} ({spread_pct:.3f}%)  │  "
-            f"Imbalance: [{ratio_color}]{ratio_str}[/{ratio_color}]"
+            f"TOB: {tob_str}  Depth: [{ratio_color}]{ratio_str}[/{ratio_color}]"
+            f"{grouping_str}"
         )
 
     def _render_side(

@@ -32,6 +32,7 @@ class PositionSnapshot:
     suggested_stop_price: float
     stop_loss_pct: float
     stop_is_manual: bool  # True if stop was set manually, False if calculated
+    stop_source: Optional[str]  # "atr" | "manual" | None
     portfolio_value_usd: float  # total portfolio for risk % calc
     risk_pct: float  # cost_basis / portfolio_value * 100
 
@@ -73,10 +74,12 @@ def calculate_snapshot(
             else stop_loss_pct
         )
         stop_is_manual = True
+        stop_source = position.stop_source
     else:
         suggested_stop = position.avg_entry_price * (1 - stop_loss_pct / 100)
         effective_stop_pct = stop_loss_pct
         stop_is_manual = False
+        stop_source = None
 
     return PositionSnapshot(
         symbol=position.symbol,
@@ -92,6 +95,7 @@ def calculate_snapshot(
         suggested_stop_price=suggested_stop,
         stop_loss_pct=effective_stop_pct,
         stop_is_manual=stop_is_manual,
+        stop_source=stop_source,
         portfolio_value_usd=portfolio_value_usd,
         risk_pct=risk_pct,
     )

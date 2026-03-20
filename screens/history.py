@@ -18,6 +18,7 @@ from textual_plotext import PlotextPlot
 
 from app import database as db
 from app.config import HISTORY_REFRESH_SECONDS
+from app.indicators import compute_win_rate, compute_avg_r
 
 
 class PnlChart(PlotextPlot):
@@ -171,10 +172,19 @@ class HistoryScreen(Screen):
         total_fees = sum(p.total_fees_paid for p in positions)
         pnl_color = "pnl-positive" if total_realized >= 0 else "pnl-negative"
         sign = "+" if total_realized >= 0 else ""
+
+        win_rate = compute_win_rate(positions)
+        avg_r = compute_avg_r(positions)
+        win_str = f"{win_rate:.0f}%" if win_rate is not None else "—"
+        avg_r_str = (
+            f"{'+' if avg_r >= 0 else ''}{avg_r:.1f}%" if avg_r is not None else "—"
+        )
+
         self.query_one("#summary-bar", Static).update(
             f"Closed Positions: {len(positions)}  │  "
             f"Total Realized P&L: [{pnl_color}]{sign}${total_realized:,.2f}[/{pnl_color}]  │  "
-            f"Total Fees: ${total_fees:,.4f}"
+            f"Total Fees: ${total_fees:,.4f}  │  "
+            f"Win rate: {win_str}  │  Avg R: {avg_r_str}"
         )
 
     def _update_chart(self, positions) -> None:

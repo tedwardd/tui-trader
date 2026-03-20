@@ -7,8 +7,57 @@ Each test gets a fresh database.
 
 import pytest
 from datetime import datetime
+from pathlib import Path
 from app.models import Position, Trade, PriceAlert
 import app.database as db
+
+
+# ---------------------------------------------------------------------------
+# configure_engine (paper trading DB swap)
+# ---------------------------------------------------------------------------
+
+class TestConfigureEngine:
+    def test_configure_engine_switches_to_new_file(self, tmp_path, monkeypatch):
+        """configure_engine() points the module at a different SQLite file."""
+        paper_db = tmp_path / "paper_trades.db"
+        db.configure_engine(paper_db)
+        db.init_db()
+        # Write to the new engine
+        pos = db.save_position(Position(symbol="BTC/USD", avg_entry_price=70000, total_amount=0.1))
+        assert pos.id is not None
+        assert paper_db.exists()
+
+    def test_configure_engine_isolates_data(self, tmp_path, monkeypatch):
+        """Data written after configure_engine() goes to the new file, not the old one."""
+        db_a = tmp_path / "a.db"
+        db_b = tmp_path / "b.db"
+
+        db.configure_engine(db_a)
+        db.init_db()
+        db.save_position(Position(symbol="ETH/USD", avg_entry_price=3000, total_amount=1.0))
+
+        db.configure_engine(db_b)
+        db.init_db()
+        # db_b is fresh — no positions from db_a
+        assert db.get_open_positions() == []
+
+    def test_configure_engine_restores_correctly(self, tmp_path, monkeypatch):
+        """Reconfiguring back to db_a sees its data again."""
+        db_a = tmp_path / "a.db"
+        db_b = tmp_path / "b.db"
+
+        db.configure_engine(db_a)
+        db.init_db()
+        db.save_position(Position(symbol="BTC/USD", avg_entry_price=80000, total_amount=0.5))
+
+        db.configure_engine(db_b)
+        db.init_db()
+        assert db.get_open_positions() == []
+
+        db.configure_engine(db_a)
+        positions = db.get_open_positions()
+        assert len(positions) == 1
+        assert positions[0].symbol == "BTC/USD"
 
 
 def make_open_position(symbol="BTC/USD", avg_entry=60000.0, amount=0.1) -> Position:
