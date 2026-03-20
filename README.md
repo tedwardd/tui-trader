@@ -9,6 +9,8 @@ Built for personal use by a single trader. Not a library, not multi-user, not in
 ## Features
 
 - **Live dashboard** — open positions with real-time P&L, updated via WebSocket on every trade event
+- **Technical indicators** — RSI (hourly candles, seeded from REST on startup), ATR, and VWAP displayed on the dashboard
+- **Paper trading mode** — simulate orders locally without touching the exchange (`--paper` flag, orange header banner, separate database)
 - **Buy / Sell** — place market and limit spot orders directly from the terminal
 - **Add to position** — buy more of an existing position with automatic weighted average entry recalculation
 - **Close position** — sell with the full position size pre-filled
@@ -16,7 +18,7 @@ Built for personal use by a single trader. Not a library, not multi-user, not in
 - **Risk management panel** — % of portfolio at risk and suggested stop-loss per position
 - **Manual stop-loss** — override the default stop % with a specific price per position, updated live
 - **Price alerts** — set above/below price triggers; fires both an in-terminal toast and an OS desktop notification (via D-Bus) when hit
-- **Order book** — live bid/ask depth display updated via WebSocket
+- **Order book** — live bid/ask depth display with spread and depth chart, updated via WebSocket
 - **History** — closed positions table with a cumulative realized P&L line chart over time
 - **Portfolio value** — total wallet value (all assets + free USD) shown live in the header
 
@@ -86,6 +88,9 @@ $EDITOR ~/.config/tui-trader/config.env
 
 # 5. Run
 .venv/bin/python main.py
+
+# Run in paper trading mode (simulated orders, no real exchange activity)
+.venv/bin/python main.py --paper
 ```
 
 ---
@@ -96,6 +101,7 @@ $EDITOR ~/.config/tui-trader/config.env
 |---|---|
 | Config / credentials | `~/.config/tui-trader/config.env` |
 | Database | `~/.local/share/tui-trader/trades.db` |
+| Paper trading database | `~/.local/share/tui-trader/paper_trades.db` |
 
 ---
 
@@ -163,7 +169,8 @@ re-run — skips orders already present.
 ```
 
 Tests complete in under 2 seconds and cover position/P&L logic, database CRUD,
-alert evaluation, trade recording, and the history chart series.
+alert evaluation, trade recording, technical indicators, paper exchange fills,
+order book logic, and the history chart series.
 
 ---
 

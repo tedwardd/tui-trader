@@ -25,6 +25,9 @@ not multi-user, and not intended for deployment.
 
 # Subsequent runs
 .venv/bin/python main.py
+
+# Paper trading mode — simulated orders, no real exchange activity
+.venv/bin/python main.py --paper
 ```
 
 ### Setup
@@ -71,6 +74,7 @@ python3 -m venv --system-site-packages .venv
 |---|---|
 | Config / credentials | `~/.config/tui-trader/config.env` |
 | Database | `~/.local/share/tui-trader/trades.db` |
+| Paper trading database | `~/.local/share/tui-trader/paper_trades.db` |
 | Cloud sync session ID | `~/.local/share/tui-trader/cloud_sync.session` |
 
 On first run, if `~/.config/tui-trader/config.env` does not exist, it is
@@ -99,6 +103,8 @@ Kraken WebSocket (ccxt Pro)
 Kraken REST (ccxt) — used only for:
   - Placing / cancelling orders
   - Fetching full wallet balance on startup
+  - Fetching OHLCV data on startup (ATR seed: 20 daily candles; RSI seed: 30 hourly candles)
+  - ATR refresh every 30 minutes via set_interval
   - Fetching trade history on startup (import script)
 
 SQLite (trades.db) — local source of truth for:
@@ -211,7 +217,7 @@ Recovery of any lost trades: `scripts/import_orders.py <ORDER_ID> [...]`
 
 ### `app/config.py`
 - Handles XDG path resolution and first-run bootstrap
-- Exports: `CONFIG_DIR`, `DATA_DIR`, `CONFIG_FILE`, `DATABASE_PATH`
+- Exports: `CONFIG_DIR`, `DATA_DIR`, `CONFIG_FILE`, `DATABASE_PATH`, `PAPER_DATABASE_PATH`
 - Exports all settings as module-level constants
 - Calls `sys.exit(0)` on first run if config file doesn't exist yet
 - Also exports `CLOUD_SYNC_ENABLED`, `CLOUD_SYNC_ENDPOINT_URL`,
@@ -231,6 +237,9 @@ Recovery of any lost trades: `scripts/import_orders.py <ORDER_ID> [...]`
 
 ### `app/database.py`
 - All SQLite CRUD — no business logic
+- `configure_engine(path)` — switch to a different database file; must be
+  called before `init_db()`. Used by paper trading mode to redirect writes to
+  `paper_trades.db` without touching the live database.
 - `init_db()` — safe to call on every startup (idempotent); runs schema
   migrations (e.g. `_migrate_add_stop_loss_price()`)
 - `set_stop_loss(position_id, price)` — set or clear manual stop (`None` = clear)
@@ -248,7 +257,28 @@ Recovery of any lost trades: `scripts/import_orders.py <ORDER_ID> [...]`
 ### `app/exchange.py`
 - Thin ccxt REST wrapper
 - Module-level singleton `_exchange` — one REST client shared across the app
-- Used only for writes (orders) and one-time reads (startup balance)
+- Used for writes (orders), startup balance fetch, and OHLCV data
+- `fetch_ohlcv(symbol, timeframe, limit)` — returns list of
+  `[timestamp, open, high, low, close, volume]` candles, oldest-first
+
+### `app/indicators.py`
+- **Pure functions, no I/O** — safe to unit test in isolation
+- All functions return `None` when data is insufficient (callers can distinguish
+  "no data" from a genuine zero reading)
+- `compute_rsi(prices, period=14)` — Wilder-smoothed RSI from a list of closing
+  prices; needs `period + 1` prices minimum
+- `compute_atr(ohlcv, period=14)` — Wilder-smoothed ATR from OHLCV candles;
+  needs `period + 1` candles minimum
+- `compute_win_rate(closed_positions)` — win rate as a percentage (0–100)
+- `compute_avg_r(closed_positions)` — average return per trade as % of cost basis
+
+### `app/paper_exchange.py`
+- Simulates order fills without touching the real exchange
+- Returns the same dict shape as ccxt order objects so `screens/trade.py`
+  needs no special-casing between paper and live paths
+- Fees approximate Kraken's retail schedule: taker 0.40% (market), maker 0.16% (limit)
+- Order IDs are prefixed `PAPER-` for easy identification in the database
+- Functions: `place_market_buy`, `place_market_sell`, `place_limit_buy`, `place_limit_sell`
 
 ### `app/streams.py`
 - `StreamManager` — owns the single `ccxtpro.kraken` instance
@@ -276,6 +306,9 @@ Recovery of any lost trades: `scripts/import_orders.py <ORDER_ID> [...]`
 
 ### `main.py`
 - `TradeApp(App)` — the root Textual application
+- `TradeApp(paper_mode=False)` — pass `True` (via `--paper` CLI flag) to enable
+  paper trading; switches DB to `paper_trades.db`, skips cloud sync, shows an
+  orange header banner
 - Key state: `_prices` (dict, last known price per symbol), `_free_usd`,
   `_asset_balances` (full Kraken wallet), `_open_positions`
 - `_read_only: bool` — True when another session holds the cloud lock; all
@@ -284,8 +317,15 @@ Recovery of any lost trades: `scripts/import_orders.py <ORDER_ID> [...]`
   cloud sync is not configured or this session is read-only
 - `_lock_info: dict | None` — lock metadata (hostname, locked_at, etc.) from
   the cloud, set when entering read-only mode; used to populate the banner
+- Indicator state: `_atr`, `_rsi`, `_vwap` (all `float | None`); `_hourly_closes`
+  (deque, maxlen=100); `_candle_open_ts` (int, unix hour); `_candle_close` (float)
+- RSI is seeded on startup from 30 hourly REST candles and updated once per hour
+  when a candle closes in `on_ticker_update`. It does **not** update on every tick.
+- ATR is seeded from 20 daily candles on startup and refreshed every 30 minutes
+  via `set_interval(30 * 60, self._refresh_atr)`
 - `_refresh_dashboard()` — called on every ticker event; computes portfolio
-  value as `_free_usd + sum(amount * price for each asset in _asset_balances)`
+  value as `_free_usd + sum(amount * price for each asset in _asset_balances)`;
+  also calls `dashboard.update_indicators(vwap, rsi, atr, price)`
 - `reload_positions()` — called immediately after a buy/sell is recorded
   locally so the dashboard updates without waiting for the WS fill notification
 - Portfolio value in header subtitle is set inside `_refresh_dashboard()`
@@ -406,7 +446,6 @@ One-off utility to import Kraken order IDs into the local database.
 - **In-app settings screen** — configure options without editing files
 - **Smaller terminal usability** — responsive layout, collapsible panels
 - **TradingView integration** — pressing Enter on a symbol opens the pair in browser
-- **Order book depth chart** — market depth visualisation with configurable depth and refresh interval
 
 ### Low priority
 - **DCA calculator** — plan averaging down to a target entry price
@@ -435,6 +474,9 @@ tests/
 ├── unit/
 │   ├── test_models.py             # Position/Trade methods — pure, no I/O
 │   ├── test_pnl.py                # All functions in app/pnl.py — pure, no I/O
+│   ├── test_indicators.py         # compute_rsi, compute_atr, compute_win_rate, compute_avg_r
+│   ├── test_paper_exchange.py     # Paper fill dicts, fee math, order ID format
+│   ├── test_orderbook_logic.py    # Order book depth/spread logic
 │   └── test_notifications.py     # send_notification with mocked D-Bus/GLib
 ├── integration/
 │   ├── test_database.py           # All CRUD with in-memory SQLite
