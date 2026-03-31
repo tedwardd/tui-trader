@@ -11,17 +11,14 @@ Wraps the OrderForm widget in a full screen with:
 from typing import Optional
 from textual.app import ComposeResult
 from textual.screen import Screen
-from textual.widgets import Header, Footer, Static, Label
-from textual.containers import Vertical, Horizontal
+from textual.widgets import Header, Footer, Static
+from textual.containers import Vertical
 
 from widgets.order_form import OrderForm
 import app.exchange as exchange
-from app import database as db
+from app.exchange import canonical_fee
 from app import cloud_sync
-from app.models import Position, Trade
-from app.pnl import calculate_weighted_avg_entry
-
-_ATR_MULTIPLIER = 1.5  # stop placed this many ATRs below avg entry
+from app import trade_recorder
 
 
 class TradeScreen(Screen):
@@ -80,14 +77,8 @@ class TradeScreen(Screen):
             yield Static("", id="status-msg", classes="status-msg")
         yield Footer()
 
-    def on_mount(self) -> None:
-        self._apply_prefill()
-
     def on_screen_resume(self) -> None:
-        """Re-apply prefill every time the screen becomes active (screens are reused)."""
-        self._apply_prefill()
-
-    def _apply_prefill(self) -> None:
+        """Re-apply prefill every time the screen becomes active (used for close position flow)."""
         if self._prefill_symbol or self._prefill_amount:
             form = self.query_one(OrderForm)
             form.prefill(
@@ -97,10 +88,7 @@ class TradeScreen(Screen):
             )
 
     def prefill(self, symbol: str, amount: float = 0.0) -> None:
-        """
-        Pre-fill the form before the screen is pushed.
-        Called by the app for 'add to position' and 'close position' flows.
-        """
+        """Pre-fill the form. Called by the app for the 'close position' flow."""
         self._prefill_symbol = symbol
         self._prefill_amount = amount
 
@@ -198,43 +186,37 @@ class TradeScreen(Screen):
                 or self._current_price
                 or 0
             )
-            filled_amount = float(order.get("filled") or order.get("amount") or amount)
             fee_info = order.get("fee") or {}
-            fee = float(fee_info.get("cost") or 0)
+            raw_fee = float(fee_info.get("cost") or 0)
+            fee = canonical_fee(raw_fee, filled_amount, fill_price, order_type)
             fee_currency = str(fee_info.get("currency") or "USD")
             order_id = str(order.get("id", ""))
 
-            if not fee_info:
+            # For limit orders that haven't filled yet, skip local recording —
+            # the fill will arrive via watch_my_trades and be recorded then.
+            filled_amount = float(order.get("filled") or 0)
+            if order_type == "limit" and filled_amount == 0:
                 self.app.call_from_thread(
                     self.app.notify,
-                    "Fee data missing from order response — fee recorded as $0.00. "
-                    "Check trade history and correct manually if needed.",
-                    severity="warning",
-                    timeout=15,
+                    f"Limit order placed — will appear in positions when filled",
+                    severity="information",
+                    timeout=8,
                 )
+                self.app.call_from_thread(self.app.pop_screen)
+                return
 
-            # Update local position tracking
+            # Market orders (and immediately-filled limits): record now
+            if filled_amount == 0:
+                filled_amount = float(order.get("amount") or amount)
+
+            atr = getattr(self.app, "_atr", None)
             if side == "buy":
-                atr = getattr(self.app, "_atr", None)
-                self._record_buy(
-                    symbol,
-                    filled_amount,
-                    fill_price,
-                    fee,
-                    fee_currency,
-                    order_id,
-                    order_type,
-                    atr,
+                trade_recorder.record_buy(
+                    symbol, filled_amount, fill_price, fee, fee_currency, order_id, order_type, atr
                 )
             else:
-                self._record_sell(
-                    symbol,
-                    filled_amount,
-                    fill_price,
-                    fee,
-                    fee_currency,
-                    order_id,
-                    order_type,
+                trade_recorder.record_sell(
+                    symbol, filled_amount, fill_price, fee, fee_currency, order_id, order_type
                 )
 
             self.app.call_from_thread(
@@ -272,87 +254,3 @@ class TradeScreen(Screen):
         status.add_class("status-error")
         status.update(f"✗ Order failed: {error}")
 
-    def _record_buy(
-        self,
-        symbol: str,
-        amount: float,
-        price: float,
-        fee: float,
-        fee_currency: str,
-        order_id: str,
-        order_type: str,
-        atr: float | None = None,
-    ) -> None:
-        """Create or update a local Position and record the Trade."""
-        existing = db.get_position_by_symbol(symbol)
-
-        if existing:
-            existing.add_to_position(amount, price, fee)
-            if atr is not None:
-                existing.stop_loss_price = existing.avg_entry_price - _ATR_MULTIPLIER * atr
-                existing.stop_source = "atr"
-            position = db.update_position(existing)
-        else:
-            stop_price = (price - _ATR_MULTIPLIER * atr) if atr is not None else None
-            position = db.save_position(
-                Position(
-                    symbol=symbol,
-                    avg_entry_price=price,
-                    total_amount=amount,
-                    total_fees_paid=fee,
-                    stop_loss_price=stop_price,
-                    stop_source="atr" if atr is not None else None,
-                )
-            )
-
-        db.save_trade(
-            Trade(
-                position_id=position.id,
-                symbol=symbol,
-                side="buy",
-                amount=amount,
-                price=price,
-                fee=fee,
-                fee_currency=fee_currency,
-                kraken_order_id=order_id,
-                order_type=order_type,
-            )
-        )
-
-    def _record_sell(
-        self,
-        symbol: str,
-        amount: float,
-        price: float,
-        fee: float,
-        fee_currency: str,
-        order_id: str,
-        order_type: str,
-    ) -> None:
-        """Reduce or close the local Position and record the Trade."""
-        existing = db.get_position_by_symbol(symbol)
-        if not existing:
-            return  # No tracked position — just record the trade
-
-        # If the sell amount is within dust of the full position size, treat it
-        # as a full close to avoid leaving a tiny untrackable residual.
-        _DUST_THRESHOLD = 1e-6
-        if abs(existing.total_amount - amount) <= _DUST_THRESHOLD:
-            amount = existing.total_amount
-
-        existing.reduce_position(amount, price, fee)
-        db.update_position(existing)
-
-        db.save_trade(
-            Trade(
-                position_id=existing.id,
-                symbol=symbol,
-                side="sell",
-                amount=amount,
-                price=price,
-                fee=fee,
-                fee_currency=fee_currency,
-                kraken_order_id=order_id,
-                order_type=order_type,
-            )
-        )

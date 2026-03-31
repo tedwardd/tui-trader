@@ -153,6 +153,17 @@ def trade_exists(kraken_trade_id: str) -> bool:
         return result is not None
 
 
+def trade_exists_by_order_id(kraken_order_id: str) -> bool:
+    """Return True if a trade with this order ID has already been recorded locally."""
+    if not kraken_order_id:
+        return False
+    with Session(engine) as session:
+        result = session.exec(
+            select(Trade).where(Trade.kraken_order_id == kraken_order_id)
+        ).first()
+        return result is not None
+
+
 # ---------------------------------------------------------------------------
 # Price Alert CRUD
 # ---------------------------------------------------------------------------

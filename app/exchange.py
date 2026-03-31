@@ -106,6 +106,28 @@ def place_limit_sell(symbol: str, amount: float, price: float) -> dict:
     return exchange.create_limit_sell_order(symbol, amount, price)
 
 
+def estimate_fee(amount: float, price: float, order_type: str) -> float:
+    """
+    Calculate the expected Kraken fee using the published standard fee schedule.
+    Used as a fallback when the exchange returns 0.00 or no fee data.
+
+    Standard rates (no volume discount):
+      Taker (market orders): 0.40%
+      Maker (limit orders):  0.16%
+    """
+    rate = 0.0016 if order_type == "limit" else 0.0040
+    return amount * price * rate
+
+
+def canonical_fee(fee: float, amount: float, price: float, order_type: str) -> float:
+    """
+    Return fee if it is non-zero, otherwise fall back to estimate_fee.
+    A zero fee from Kraken almost certainly means the data was missing from
+    the response, not that the trade was genuinely free.
+    """
+    return fee if fee > 0 else estimate_fee(amount, price, order_type)
+
+
 def cancel_order(order_id: str, symbol: str) -> dict:
     """Cancel an open order by ID."""
     exchange = get_exchange()

@@ -97,7 +97,7 @@ class OrderForm(Static):
         super().__init__(**kwargs)
         self._on_submit = on_submit
         self._side = side
-        self._usd_mode = False
+        self._usd_mode = side == "buy"  # buys default to USD, sells to QTY
         self._live_price = None
         self._live_symbol = None
 
@@ -120,8 +120,12 @@ class OrderForm(Static):
 
         with Horizontal(classes="form-row"):
             yield Label("Amount", classes="form-label")
-            yield Input(placeholder="Qty (e.g. 0.001)", id="amount-input", classes="form-input")
-            yield Button("QTY", id="toggle-mode-btn", classes="toggle-btn", variant="primary")
+            if self._usd_mode:
+                yield Input(placeholder="Dollar amount (e.g. 75.00)", id="amount-input", classes="form-input")
+                yield Button("USD", id="toggle-mode-btn", classes="toggle-btn", variant="warning")
+            else:
+                yield Input(placeholder="Qty (e.g. 0.001)", id="amount-input", classes="form-input")
+                yield Button("QTY", id="toggle-mode-btn", classes="toggle-btn", variant="primary")
 
         with Horizontal(classes="form-row", id="price-row"):
             yield Label("Limit Price", classes="form-label")
@@ -324,8 +328,9 @@ class OrderForm(Static):
             self.query_one("#amount-input", Input).value = f"{amount:.8f}"
 
     def clear(self) -> None:
-        """Reset all form fields and return to QTY mode."""
-        if self._usd_mode:
+        """Reset all form fields and return to the default mode for this side."""
+        default_usd = self._side == "buy"
+        if self._usd_mode != default_usd:
             self._toggle_mode()
         self.query_one("#symbol-input", Input).value = DEFAULT_SYMBOL
         self.query_one("#amount-input", Input).value = ""

@@ -418,11 +418,12 @@ One-off utility to import Kraken order IDs into the local database.
 | `3` | Order book |
 | `4` | Alerts |
 | `5` | History |
+| `6` | Open Orders |
 | `b` | Buy (from dashboard) |
 | `s` | Sell (from dashboard) |
-| `a` | Add to selected position |
 | `c` | Close selected position |
 | `l` | Set stop-loss for selected position |
+| `x` | Cancel selected open order (from Open Orders screen) |
 | `q` | Quit |
 | `Escape` | Close current screen / go back |
 
@@ -440,19 +441,9 @@ One-off utility to import Kraken order IDs into the local database.
 
 ---
 
-## Post-MVP TODO list
+## TODO list
 
-### Medium priority
-- **In-app settings screen** — configure options without editing files
-- **Smaller terminal usability** — responsive layout, collapsible panels
-- **TradingView integration** — pressing Enter on a symbol opens the pair in browser
-
-### Low priority
-- **DCA calculator** — plan averaging down to a target entry price
-- **Trade journal** — attach notes to trades
-- **Multi-pair dashboard** — monitor multiple symbols simultaneously (requires multiple ticker subscriptions)
-- **Fee tracking** — realized fees per trade and cumulative totals
-- **CSV export** — trade history export for tax purposes
+See [TODO.md](TODO.md) for all outstanding work items.
 
 ---
 

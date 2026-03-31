@@ -38,7 +38,6 @@ class DashboardScreen(Screen):
     BINDINGS = [
         Binding("b", "buy", "Buy", priority=True),
         Binding("s", "sell", "Sell", priority=True),
-        Binding("a", "add_to_position", "Add to Position", priority=True),
         Binding("c", "close_position", "Close Position", priority=True),
         Binding("l", "set_stop_loss", "Set Stop-Loss", priority=True),
         Binding("4", "show_alerts", "Alerts", priority=True),
@@ -144,15 +143,6 @@ class DashboardScreen(Screen):
             self.notify(self._READ_ONLY_MSG, severity="warning")
             return
         self.app.push_screen("trade_sell")
-
-    def action_add_to_position(self) -> None:
-        """Pre-fill the buy form with the currently selected position's symbol."""
-        if self._is_read_only():
-            self.notify(self._READ_ONLY_MSG, severity="warning")
-            return
-        table = self.query_one(PositionTable)
-        symbol = table.get_selected_symbol()
-        self.app.open_add_to_position(symbol)
 
     def action_close_position(self) -> None:
         """Pre-fill the sell form with the currently selected position."""
