@@ -83,6 +83,8 @@ class StreamManager:
             try:
                 ticker = await exchange.watch_ticker(symbol)
                 app.on_ticker_update(ticker)
+            except asyncio.CancelledError:
+                raise
             except ccxtpro.AuthenticationError as e:
                 log.error("ticker_worker: auth error — %s", e)
                 break  # fatal: bad API keys
@@ -114,6 +116,8 @@ class StreamManager:
             try:
                 ob = await exchange.watch_order_book(symbol, _ORDERBOOK_FETCH_DEPTH)
                 app.on_orderbook_update(ob)
+            except asyncio.CancelledError:
+                raise
             except ccxtpro.AuthenticationError as e:
                 log.error("orderbook_worker: auth error — %s", e)
                 break
@@ -146,6 +150,8 @@ class StreamManager:
                 try:
                     orders = await exchange.watch_orders()
                     app.on_orders_update(orders)
+                except asyncio.CancelledError:
+                    raise
                 except ccxtpro.AuthenticationError as e:
                     log.error("watch_orders: auth error — %s", e)
                     break
@@ -163,6 +169,8 @@ class StreamManager:
                 try:
                     balance = await exchange.watch_balance()
                     app.on_balance_update(balance)
+                except asyncio.CancelledError:
+                    raise
                 except ccxtpro.AuthenticationError as e:
                     log.error("watch_balance: auth error — %s", e)
                     break
@@ -180,6 +188,8 @@ class StreamManager:
                 try:
                     trades = await exchange.watch_my_trades()
                     app.on_my_trades_update(trades)
+                except asyncio.CancelledError:
+                    raise
                 except ccxtpro.AuthenticationError as e:
                     log.error("watch_my_trades: auth error — %s", e)
                     break

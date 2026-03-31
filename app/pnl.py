@@ -59,10 +59,15 @@ def calculate_snapshot(
         if position.avg_entry_price > 0
         else 0.0
     )
+    # cost_basis is fee-exclusive so it matches Avg Entry × Size visible in the table.
+    # current_value deducts buy-side fees so that cost_basis + unrealized_pnl = current_value.
+    # risk_pct uses the fee-inclusive total (true capital deployed).
     cost_basis = position.avg_entry_price * position.total_amount
-    current_value = current_price * position.total_amount
+    current_value = current_price * position.total_amount - position.total_fees_paid
     risk_pct = (
-        (cost_basis / portfolio_value_usd * 100) if portfolio_value_usd > 0 else 0.0
+        ((cost_basis + position.total_fees_paid) / portfolio_value_usd * 100)
+        if portfolio_value_usd > 0
+        else 0.0
     )
 
     # Use manual stop if set, otherwise calculate from default %

@@ -37,7 +37,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Static
 from textual.reactive import reactive
 
-from app.config import DEFAULT_SYMBOL, DEFAULT_STOP_LOSS_PCT, PAPER_DATABASE_PATH
+from app.config import DATA_DIR, DEFAULT_SYMBOL, DEFAULT_STOP_LOSS_PCT, PAPER_DATABASE_PATH
 from app import database as db
 from app import cloud_sync
 from app.models import Position
@@ -50,6 +50,7 @@ from app.alerts import AlertManager
 from app.notifications import send_notification
 from app.streams import stream_manager
 from app import exchange as kraken_rest
+from app.exchange import canonical_fee
 from app.indicators import compute_atr, compute_rsi
 
 from screens.dashboard import DashboardScreen
@@ -57,10 +58,12 @@ from screens.trade import TradeScreen
 from screens.orderbook import OrderBookScreen
 from screens.history import HistoryScreen
 from screens.alerts_screen import AlertsScreen
+from screens.open_orders import OpenOrdersScreen
 
 logging.basicConfig(
     level=logging.WARNING,
     format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    filename=DATA_DIR / "tui-trader.log",
 )
 log = logging.getLogger(__name__)
 
@@ -251,6 +254,7 @@ class TradeApp(App):
         ("3", "push_screen('orderbook')", "Order Book"),
         ("4", "push_screen('alerts')", "Alerts"),
         ("5", "push_screen('history')", "History"),
+        ("6", "push_screen('open_orders')", "Open Orders"),
         ("q", "quit", "Quit"),
     ]
 
@@ -266,6 +270,8 @@ class TradeApp(App):
     def __init__(self, paper_mode: bool = False) -> None:
         super().__init__()
         self.paper_mode: bool = paper_mode
+        from datetime import datetime, timezone
+        self._started_at: datetime = datetime.now(timezone.utc)
         self._symbol = DEFAULT_SYMBOL
         self._prices: dict[str, float] = {}  # last known price per symbol
         self._asset_balances = {}
@@ -296,10 +302,9 @@ class TradeApp(App):
         # --- Paper trading mode: use a separate database, skip cloud sync ---
         if self.paper_mode:
             db.configure_engine(PAPER_DATABASE_PATH)
-            db.init_db()
-            self._open_positions = db.get_open_positions()
         else:
-            # --- Cloud sync: download latest DB and acquire (or check) the lock ---
+            # Cloud sync DB download must complete before db.init_db() so the
+            # correct database file is in place before we open it.
             if cloud_sync.is_configured():
                 try:
                     cloud_sync.sync_down()
@@ -308,54 +313,95 @@ class TradeApp(App):
                     log.error("cloud_sync: startup error — %s", e)
                     self._cloud_startup_error = str(e)
 
-        # Fetch full wallet balance via REST on startup so portfolio value and
-        # risk % are correct from the first ticker update, before the private
-        # WebSocket stream has connected.
-        try:
-            balance = kraken_rest.fetch_balance()
-            self._free_usd = float(balance.get("USD", {}).get("total") or 0)
-            self._asset_balances = {
-                currency: float(amounts.get("total") or 0)
-                for currency, amounts in balance.items()
-                if isinstance(amounts, dict)
-                and currency != "USD"
-                and float(amounts.get("total") or 0) > 0
-            }
-        except Exception as e:
-            log.warning("Could not fetch initial balance: %s", e)
+        db.init_db()
+        self._open_positions = db.get_open_positions()
 
-        try:
-            ohlcv = kraken_rest.fetch_ohlcv(self._symbol, timeframe="1d", limit=20)
-            self._atr = compute_atr(ohlcv)
-        except Exception as e:
-            log.warning("Could not fetch OHLCV for ATR: %s", e)
-
-        try:
-            ohlcv_1h = kraken_rest.fetch_ohlcv(self._symbol, timeframe="1h", limit=30)
-            closes = [c[4] for c in ohlcv_1h]
-            self._hourly_closes = collections.deque(closes, maxlen=100)
-            self._rsi = compute_rsi(list(self._hourly_closes))
-        except Exception as e:
-            log.warning("Could not fetch hourly OHLCV for RSI: %s", e)
-
-        # Start WebSocket workers
+        # Start WebSocket workers immediately — they connect in parallel with
+        # the REST startup calls below.
         self.run_worker(
             stream_manager.ticker_worker(self, self._symbol),
             exclusive=False,
+            exit_on_error=False,
             name="ticker",
         )
         self.run_worker(
             stream_manager.orderbook_worker(self, self._symbol),
             exclusive=False,
+            exit_on_error=False,
             name="orderbook",
         )
         self.run_worker(
             stream_manager.private_worker(self),
             exclusive=False,
+            exit_on_error=False,
             name="private",
         )
 
         self.set_interval(30 * 60, self._refresh_atr)
+
+        # Fetch balance, indicators, and reconcile fills in a background thread
+        # so the UI renders immediately rather than waiting on REST round-trips.
+        self.run_worker(
+            self._startup_rest_worker,
+            exclusive=False,
+            exit_on_error=False,
+            thread=True,
+            name="startup_rest",
+        )
+
+    def _startup_rest_worker(self) -> None:
+        """
+        Background thread: fetch balance, ATR/RSI indicators, and reconcile
+        offline fills. Runs concurrently with WebSocket connection and the
+        initial UI render. All three REST calls run in parallel via threads.
+        """
+        import concurrent.futures
+
+        def fetch_balance() -> None:
+            try:
+                balance = kraken_rest.fetch_balance()
+                self.call_from_thread(self._apply_balance, balance)
+            except Exception as e:
+                log.warning("Could not fetch initial balance: %s", e)
+
+        def fetch_indicators() -> None:
+            try:
+                ohlcv = kraken_rest.fetch_ohlcv(self._symbol, timeframe="1d", limit=20)
+                self.call_from_thread(setattr, self, "_atr", compute_atr(ohlcv))
+            except Exception as e:
+                log.warning("Could not fetch OHLCV for ATR: %s", e)
+            try:
+                ohlcv_1h = kraken_rest.fetch_ohlcv(self._symbol, timeframe="1h", limit=30)
+                closes = [c[4] for c in ohlcv_1h]
+                self.call_from_thread(self._apply_hourly_closes, closes)
+            except Exception as e:
+                log.warning("Could not fetch hourly OHLCV for RSI: %s", e)
+
+        def reconcile() -> None:
+            if not self.paper_mode:
+                self._reconcile_fills()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+            futures = [
+                pool.submit(fetch_balance),
+                pool.submit(fetch_indicators),
+                pool.submit(reconcile),
+            ]
+            concurrent.futures.wait(futures)
+
+    def _apply_balance(self, balance: dict) -> None:
+        self._free_usd = float(balance.get("USD", {}).get("total") or 0)
+        self._asset_balances = {
+            currency: float(amounts.get("total") or 0)
+            for currency, amounts in balance.items()
+            if isinstance(amounts, dict)
+            and currency != "USD"
+            and float(amounts.get("total") or 0) > 0
+        }
+
+    def _apply_hourly_closes(self, closes: list) -> None:
+        self._hourly_closes = collections.deque(closes, maxlen=100)
+        self._rsi = compute_rsi(list(self._hourly_closes))
 
     def _setup_cloud_lock(self) -> None:
         """
@@ -393,6 +439,73 @@ class TradeApp(App):
                     lock.get("session_id"),
                 )
 
+    def _reconcile_fills(self) -> None:
+        """
+        On startup, fetch recent fills from Kraken and record any that are not
+        already in the local DB.
+
+        To avoid pulling in old trades by mistake, fills for a symbol are only
+        considered if their timestamp is after the opened_at of the current open
+        position for that symbol. If no local position exists for a symbol, the
+        fill's own timestamp acts as the cutoff (i.e. it is always considered).
+        """
+        from app import trade_recorder
+        from app.database import trade_exists_by_order_id
+        from datetime import datetime, timezone
+
+        try:
+            trades = kraken_rest.fetch_my_trades(limit=50)
+        except Exception as e:
+            log.warning("Startup reconciliation: could not fetch trades — %s", e)
+            return
+
+        # Build a cutoff map: symbol → opened_at of current open position.
+        # Fills at or before this timestamp belong to a previous position cycle.
+        cutoffs: dict[str, datetime] = {}
+        for pos in self._open_positions:
+            cutoffs[pos.symbol] = pos.opened_at
+
+        recorded = 0
+        for trade in trades:
+            order_id = str(trade.get("order") or "")
+            if trade_exists_by_order_id(order_id):
+                continue
+
+            symbol = str(trade.get("symbol") or "")
+            side = str(trade.get("side") or "")
+            amount = float(trade.get("amount") or 0)
+            price = float(trade.get("price") or 0)
+            if not symbol or not side or amount == 0 or price == 0:
+                continue
+
+            # Apply the timestamp cutoff for this symbol.
+            ts_ms = trade.get("timestamp")
+            if ts_ms and symbol in cutoffs:
+                fill_dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).replace(tzinfo=None)
+                if fill_dt <= cutoffs[symbol]:
+                    continue
+
+            fee_info = trade.get("fee") or {}
+            raw_fee = float(fee_info.get("cost") or 0)
+            order_type = str(trade.get("type") or "limit")
+            fee = canonical_fee(raw_fee, amount, price, order_type)
+            fee_currency = str(fee_info.get("currency") or "USD")
+
+            if side == "buy":
+                trade_recorder.record_buy(
+                    symbol, amount, price, fee, fee_currency, order_id, order_type, self._atr
+                )
+            else:
+                trade_recorder.record_sell(
+                    symbol, amount, price, fee, fee_currency, order_id, order_type
+                )
+            recorded += 1
+            log.info("Reconciled offline fill: %s %s %s @ %s", side, amount, symbol, price)
+
+        if recorded:
+            self._open_positions = db.get_open_positions()
+            log.info("Startup reconciliation: recorded %d missing fill(s)", recorded)
+
     async def _refresh_atr(self) -> None:
         """Refresh ATR every 30 minutes from daily OHLCV data."""
         import asyncio
@@ -423,6 +536,7 @@ class TradeApp(App):
         self.install_screen(OrderBookScreen(), name="orderbook")
         self.install_screen(HistoryScreen(), name="history")
         self.install_screen(AlertsScreen(self._alert_manager), name="alerts")
+        self.install_screen(OpenOrdersScreen(), name="open_orders")
         self.push_screen("dashboard")
 
         if self.paper_mode:
@@ -537,9 +651,14 @@ class TradeApp(App):
 
     def on_orders_update(self, orders) -> None:
         """Fired when order status changes (fill, cancel, etc.)."""
-        # Reload open positions in case a fill changed them
         self._open_positions = db.get_open_positions()
         self._refresh_dashboard(self._current_price)
+        try:
+            open_orders_screen = self.get_screen("open_orders")
+            if self.screen is open_orders_screen:
+                open_orders_screen.update_orders(orders)
+        except Exception:
+            pass
 
     def on_balance_update(self, balance) -> None:
         """Fired when account balance changes (after a fill)."""
@@ -555,8 +674,57 @@ class TradeApp(App):
     def on_my_trades_update(self, trades) -> None:
         """
         Fired when a new fill arrives via the private executions channel.
-        Notifies the history screen to reload.
+        Records any fills not already in the local DB (i.e. limit order fills),
+        then reloads positions and notifies the history screen.
         """
+        from app import trade_recorder
+        from app.database import trade_exists_by_order_id
+
+        recorded = False
+        for trade in trades:
+            order_id = str(trade.get("order") or "")
+            if trade_exists_by_order_id(order_id):
+                continue  # already recorded at placement (market order)
+
+            # Skip historical fills replayed by Kraken on WebSocket connect
+            from datetime import datetime, timezone
+            ts_ms = trade.get("timestamp")
+            if ts_ms is not None:
+                trade_dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+                if trade_dt < self._started_at:
+                    continue
+
+            symbol = str(trade.get("symbol") or "")
+            side = str(trade.get("side") or "")
+            amount = float(trade.get("amount") or 0)
+            price = float(trade.get("price") or 0)
+            if not symbol or not side or amount == 0 or price == 0:
+                continue
+
+            fee_info = trade.get("fee") or {}
+            raw_fee = float(fee_info.get("cost") or 0)
+            order_type = str(trade.get("type") or "limit")
+            fee = canonical_fee(raw_fee, amount, price, order_type)
+            fee_currency = str(fee_info.get("currency") or "USD")
+
+            if side == "buy":
+                trade_recorder.record_buy(
+                    symbol, amount, price, fee, fee_currency, order_id, order_type, self._atr
+                )
+            else:
+                trade_recorder.record_sell(
+                    symbol, amount, price, fee, fee_currency, order_id, order_type
+                )
+            recorded = True
+
+        if recorded:
+            self.reload_positions()
+            self.notify(
+                f"Limit order filled — position updated",
+                severity="information",
+                timeout=6,
+            )
+
         try:
             history_screen = self.get_screen("history")
             history_screen.notify_new_fill()
@@ -658,14 +826,12 @@ class TradeApp(App):
         dashboard updates without waiting for the WebSocket fill notification.
         """
         self._open_positions = db.get_open_positions()
-        self._refresh_dashboard(self._current_price)
-
-    def open_add_to_position(self, symbol: Optional[str]) -> None:
-        """Open the buy screen pre-filled with the selected position's symbol."""
-        screen = self.get_screen("trade_buy")
-        if symbol:
-            screen.prefill(symbol=symbol)
-        self.push_screen("trade_buy")
+        # Use call_after_refresh so the screen transition (trade → dashboard)
+        # completes before we check self.screen in _refresh_dashboard.
+        # Without this, the "if self.screen is dashboard" guard in
+        # _refresh_dashboard fires while the trade screen is still active,
+        # and the dashboard silently skips the update until the next ticker tick.
+        self.call_after_refresh(lambda: self._refresh_dashboard(self._current_price))
 
     def open_close_position(self, symbol: Optional[str]) -> None:
         """Open the sell screen pre-filled with the selected position's symbol."""
