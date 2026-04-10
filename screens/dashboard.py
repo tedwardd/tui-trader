@@ -83,6 +83,7 @@ class DashboardScreen(Screen):
     ) -> None:
         """Refresh position table, P&L summary, and risk panel."""
         self._snapshots = snapshots
+        self._summary = summary
         self.query_one(PositionTable).update_snapshots(snapshots)
         self.query_one(PnlSummary).update_summary(summary)
         self.query_one(RiskPanel).update_snapshots(snapshots)
@@ -122,6 +123,20 @@ class DashboardScreen(Screen):
 
     def on_mount(self) -> None:
         self._snapshots: list[PositionSnapshot] = []
+        self._summary: PortfolioSummary | None = None
+
+    def on_show(self) -> None:
+        """Re-render position data when the dashboard becomes the active screen.
+
+        _refresh_dashboard skips the widget queries when the dashboard is
+        inactive (query_one raises NoMatches on hidden screens).  Any update
+        that arrived while another screen was open is stored in _snapshots /
+        _summary and applied here so the view is always current on focus.
+        """
+        if self._summary is not None:
+            self.query_one(PositionTable).update_snapshots(self._snapshots)
+            self.query_one(PnlSummary).update_summary(self._summary)
+            self.query_one(RiskPanel).update_snapshots(self._snapshots)
 
     # -----------------------------------------------------------------------
     # Actions — delegate to the parent app for screen navigation

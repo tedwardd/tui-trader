@@ -227,16 +227,14 @@ def force_clear_lock() -> None:
     """
     Delete the cloud lock file unconditionally.
     Used by the --force-unlock recovery path only.
+    Raises on failure so the caller can report the error to the user.
     """
     if not is_configured():
         return
     cfg = _cfg()
-    try:
-        client = _get_client()
-        client.delete_object(Bucket=cfg.CLOUD_SYNC_BUCKET, Key=_lock_key())
-        log.info("cloud_sync: lock force-cleared")
-    except Exception as e:
-        log.warning("cloud_sync: could not force-clear lock: %s", e)
+    client = _get_client()
+    client.delete_object(Bucket=cfg.CLOUD_SYNC_BUCKET, Key=_lock_key())
+    log.info("cloud_sync: lock force-cleared")
 
 
 # ---------------------------------------------------------------------------

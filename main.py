@@ -211,7 +211,12 @@ def _handle_force_unlock() -> None:
         print("Aborted.")
         sys.exit(1)
 
-    cloud_sync.force_clear_lock()
+    try:
+        cloud_sync.force_clear_lock()
+    except Exception as e:
+        print(f"\nError: could not clear lock — {e}")
+        print("Check your cloud sync credentials and bucket configuration.")
+        sys.exit(1)
     cloud_sync.clear_local_session_id()
     print("Lock cleared. Starting application...")
     print()
@@ -777,8 +782,12 @@ class TradeApp(App):
 
         try:
             dashboard = self.get_screen("dashboard")
-            # Only update if the dashboard is currently the active screen;
-            # calling query_one on an inactive screen raises NoMatches.
+            # Always push data to the dashboard so on_show has current state
+            # when the screen is inactive.  The widget queries inside
+            # update_positions / update_indicators raise NoMatches on hidden
+            # screens, so only call those when the dashboard is active.
+            dashboard._snapshots = snapshots
+            dashboard._summary = summary
             if self.screen is dashboard:
                 dashboard.update_positions(snapshots, summary)
                 dashboard.update_indicators(self._vwap, self._rsi, self._atr, self._current_price)
