@@ -17,7 +17,7 @@ import os
 # Allow running from the project root
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from datetime import datetime
+from datetime import datetime, timezone
 from app.config import KRAKEN_API_KEY, KRAKEN_API_SECRET
 from app import database as db
 from app.models import Position, Trade
@@ -63,7 +63,7 @@ def main(order_ids: list[str]) -> None:
         fee      = float((order.get("fee") or {}).get("cost") or 0)
         fee_ccy  = str((order.get("fee") or {}).get("currency") or "USD")
         ts_ms    = order.get("timestamp")
-        ts       = datetime.utcfromtimestamp(ts_ms / 1000) if ts_ms else datetime.utcnow()
+        ts       = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc) if ts_ms else datetime.now(timezone.utc)
         otype    = order.get("type", "market")
 
         if amount == 0 or price == 0:

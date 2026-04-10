@@ -6,7 +6,7 @@ Each test gets a fresh database.
 """
 
 import pytest
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from app.models import Position, Trade, PriceAlert
 import app.database as db
@@ -83,7 +83,7 @@ class TestPositionCrud:
     def test_get_position_by_symbol_ignores_closed(self, db_engine):
         pos = db.save_position(make_open_position())
         pos.status = "closed"
-        pos.closed_at = datetime.utcnow()
+        pos.closed_at = datetime.now(timezone.utc)
         db.update_position(pos)
         assert db.get_position_by_symbol("BTC/USD") is None
 
@@ -91,7 +91,7 @@ class TestPositionCrud:
         open_pos = db.save_position(make_open_position("BTC/USD"))
         closed_pos = db.save_position(make_open_position("ETH/USD"))
         closed_pos.status = "closed"
-        closed_pos.closed_at = datetime.utcnow()
+        closed_pos.closed_at = datetime.now(timezone.utc)
         db.update_position(closed_pos)
 
         open_list = db.get_open_positions()
@@ -103,7 +103,7 @@ class TestPositionCrud:
         db.save_position(make_open_position("BTC/USD"))
         closed = db.save_position(make_open_position("ETH/USD"))
         closed.status = "closed"
-        closed.closed_at = datetime.utcnow()
+        closed.closed_at = datetime.now(timezone.utc)
         db.update_position(closed)
 
         closed_list = db.get_closed_positions()
@@ -118,7 +118,7 @@ class TestPositionCrud:
         pos.total_fees_paid = 1.5
         pos.stop_loss_price = 63000.0
         pos.status = "closed"
-        pos.closed_at = datetime.utcnow()
+        pos.closed_at = datetime.now(timezone.utc)
         updated = db.update_position(pos)
 
         assert updated.avg_entry_price == pytest.approx(65000.0)

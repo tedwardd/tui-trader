@@ -8,6 +8,7 @@ Wraps the OrderForm widget in a full screen with:
 - Success/error feedback after order placement
 """
 
+import logging
 from typing import Optional
 from textual.app import ComposeResult
 from textual.screen import Screen
@@ -19,6 +20,8 @@ import app.exchange as exchange
 from app.exchange import canonical_fee
 from app import cloud_sync
 from app import trade_recorder
+
+log = logging.getLogger(__name__)
 
 
 class TradeScreen(Screen):
@@ -110,7 +113,7 @@ class TradeScreen(Screen):
             )
             self.query_one(OrderForm).set_live_price(symbol, price)
         except Exception:
-            pass
+            log.warning("update_price: failed to update price display", exc_info=True)
 
     def _handle_order(
         self,
@@ -186,15 +189,28 @@ class TradeScreen(Screen):
                 or self._current_price
                 or 0
             )
+            # For limit orders that haven't filled yet, skip local recording —
+            # the fill will arrive via watch_my_trades and be recorded then.
+            filled_amount = float(order.get("filled") or 0)
+            if order_type == "limit" and filled_amount == 0:
+                self.app.call_from_thread(
+                    self.app.notify,
+                    f"Limit order placed — will appear in positions when filled",
+                    severity="information",
+                    timeout=8,
+                )
+                self.app.call_from_thread(self.app.pop_screen)
+                return
+
+            # Market orders (and immediately-filled limits): record now
+            if filled_amount == 0:
+                filled_amount = float(order.get("amount") or amount)
+
             fee_info = order.get("fee") or {}
             raw_fee = float(fee_info.get("cost") or 0)
             fee = canonical_fee(raw_fee, filled_amount, fill_price, order_type)
             fee_currency = str(fee_info.get("currency") or "USD")
             order_id = str(order.get("id", ""))
-
-            # For limit orders that haven't filled yet, skip local recording —
-            # the fill will arrive via watch_my_trades and be recorded then.
-            filled_amount = float(order.get("filled") or 0)
             if order_type == "limit" and filled_amount == 0:
                 self.app.call_from_thread(
                     self.app.notify,

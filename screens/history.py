@@ -10,6 +10,8 @@ Layout:
   - Closed positions table
 """
 
+import logging
+
 from textual.app import ComposeResult
 from textual.screen import Screen
 from textual.widgets import Header, Footer, Static, DataTable
@@ -19,6 +21,8 @@ from textual_plotext import PlotextPlot
 from app import database as db
 from app.config import HISTORY_REFRESH_SECONDS
 from app.indicators import compute_win_rate, compute_avg_r
+
+log = logging.getLogger(__name__)
 
 
 class PnlChart(PlotextPlot):
@@ -140,7 +144,11 @@ class HistoryScreen(Screen):
         self._update_chart(positions)
 
     def _populate_table(self, positions) -> None:
-        table = self.query_one("#history-table", DataTable)
+        try:
+            table = self.query_one("#history-table", DataTable)
+        except Exception:
+            log.warning("load_history: history table not mounted", exc_info=True)
+            return
         table.clear()
 
         for pos in positions:
@@ -180,12 +188,15 @@ class HistoryScreen(Screen):
             f"{'+' if avg_r >= 0 else ''}{avg_r:.1f}%" if avg_r is not None else "—"
         )
 
-        self.query_one("#summary-bar", Static).update(
-            f"Closed Positions: {len(positions)}  │  "
-            f"Total Realized P&L: [{pnl_color}]{sign}${total_realized:,.2f}[/{pnl_color}]  │  "
-            f"Total Fees: ${total_fees:,.4f}  │  "
-            f"Win rate: {win_str}  │  Avg R: {avg_r_str}"
-        )
+        try:
+            self.query_one("#summary-bar", Static).update(
+                f"Closed Positions: {len(positions)}  │  "
+                f"Total Realized P&L: [{pnl_color}]{sign}${total_realized:,.2f}[/{pnl_color}]  │  "
+                f"Total Fees: ${total_fees:,.4f}  │  "
+                f"Win rate: {win_str}  │  Avg R: {avg_r_str}"
+            )
+        except Exception:
+            log.warning("load_history: summary bar not mounted", exc_info=True)
 
     def _update_chart(self, positions) -> None:
         """
@@ -197,7 +208,10 @@ class HistoryScreen(Screen):
         closed.sort(key=lambda p: p.closed_at)
 
         if not closed:
-            self.query_one(PnlChart).update_data([], [])
+            try:
+                self.query_one(PnlChart).update_data([], [])
+            except Exception:
+                log.warning("load_history: pnl chart not mounted", exc_info=True)
             return
 
         dates: list[str] = []
@@ -216,7 +230,10 @@ class HistoryScreen(Screen):
             dates.append(pos.closed_at.date().isoformat())
             pnl.append(round(cumulative, 4))
 
-        self.query_one(PnlChart).update_data(dates, pnl)
+        try:
+            self.query_one(PnlChart).update_data(dates, pnl)
+        except Exception:
+            log.warning("load_history: pnl chart not mounted", exc_info=True)
 
     def action_refresh(self) -> None:
         self.load_history()

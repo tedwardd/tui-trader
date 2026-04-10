@@ -6,12 +6,16 @@ Updates live via the watch_orders WebSocket feed.
 Allows cancelling a selected order with 'x'.
 """
 
+import logging
+
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import Header, Footer, Static, DataTable
 
 import app.exchange as exchange
+
+log = logging.getLogger(__name__)
 
 
 COLUMNS = [
@@ -123,12 +127,14 @@ class OpenOrdersScreen(Screen):
             rows = list(table.ordered_rows)
             order_id = rows[table.cursor_row].key.value
         except Exception:
+            log.warning("action_cancel_order: failed to get selected row", exc_info=True)
             return
 
         # Resolve symbol from the row before removing it
         try:
             symbol = str(table.get_cell(order_id, "symbol"))
         except Exception:
+            log.warning("action_cancel_order: failed to get symbol from row", exc_info=True)
             self.app.notify("Could not determine symbol for order", severity="error")
             return
 

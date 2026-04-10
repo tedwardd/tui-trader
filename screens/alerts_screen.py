@@ -8,6 +8,8 @@ Allows the user to:
 - See which alerts have been triggered and when
 """
 
+import logging
+
 from textual.app import ComposeResult
 from textual.screen import Screen
 from textual.widgets import (
@@ -25,6 +27,8 @@ from textual.containers import Vertical, Horizontal
 from app.models import PriceAlert
 from app.alerts import AlertManager
 from app import database as db
+
+log = logging.getLogger(__name__)
 
 
 class AlertsScreen(Screen):
@@ -147,7 +151,7 @@ class AlertsScreen(Screen):
             try:
                 self.query_one(".add-alert-form").display = False
             except Exception:
-                pass
+                log.warning("on_mount: failed to hide add-alert form", exc_info=True)
 
     def refresh_table(self) -> None:
         """Reload all alerts from the database and repopulate the table."""

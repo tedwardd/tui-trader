@@ -50,10 +50,10 @@ class RiskPanel(Static):
     .risk-low    { color: $success; }
     """
 
-    _row_symbols: set[str]
+    _row_symbols: set[str] = set()
 
     def on_mount(self) -> None:
-        self._row_symbols = set()
+        pass
 
     def compose(self) -> ComposeResult:
         yield Static("⚠ Risk Management", classes="panel-title")

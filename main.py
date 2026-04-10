@@ -37,7 +37,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Static
 from textual.reactive import reactive
 
-from app.config import DATA_DIR, DEFAULT_SYMBOL, DEFAULT_STOP_LOSS_PCT, PAPER_DATABASE_PATH
+from app.config import DATA_DIR, DEFAULT_SYMBOL, DEFAULT_STOP_LOSS_PCT, PAPER_DATABASE_PATH, ATR_REFRESH_SECONDS
 from app import database as db
 from app import cloud_sync
 from app.models import Position
@@ -342,7 +342,7 @@ class TradeApp(App):
             name="private",
         )
 
-        self.set_interval(30 * 60, self._refresh_atr)
+        self.set_interval(ATR_REFRESH_SECONDS, self._refresh_atr)
 
         # Fetch balance, indicators, and reconcile fills in a background thread
         # so the UI renders immediately rather than waiting on REST round-trips.
@@ -621,13 +621,13 @@ class TradeApp(App):
             if self.screen is trade_screen:
                 trade_screen.update_price(self._symbol, price)
         except Exception:
-            pass
+            log.warning("on_ticker_update: failed to update trade_buy screen", exc_info=True)
         try:
             trade_screen = self.get_screen("trade_sell")
             if self.screen is trade_screen:
                 trade_screen.update_price(self._symbol, price)
         except Exception:
-            pass
+            log.warning("on_ticker_update: failed to update trade_sell screen", exc_info=True)
 
     def on_orderbook_update(self, orderbook) -> None:
         """Fired on every WebSocket order book update."""
@@ -652,7 +652,7 @@ class TradeApp(App):
                     ob_screen.set_position_levels(None, None)
                 ob_screen.update_orderbook(self._symbol, orderbook)
         except Exception:
-            pass
+            log.warning("on_orderbook_update: failed to update orderbook screen", exc_info=True)
 
     def on_orders_update(self, orders) -> None:
         """Fired when order status changes (fill, cancel, etc.)."""
@@ -663,7 +663,7 @@ class TradeApp(App):
             if self.screen is open_orders_screen:
                 open_orders_screen.update_orders(orders)
         except Exception:
-            pass
+            log.warning("on_orders_update: failed to update open_orders screen", exc_info=True)
 
     def on_balance_update(self, balance) -> None:
         """Fired when account balance changes (after a fill)."""
@@ -734,7 +734,7 @@ class TradeApp(App):
             history_screen = self.get_screen("history")
             history_screen.notify_new_fill()
         except Exception:
-            pass
+            log.warning("on_my_trades_update: failed to notify history screen", exc_info=True)
 
     # ---------------------------------------------------------------------------
     # Internal helpers
@@ -792,7 +792,7 @@ class TradeApp(App):
                 dashboard.update_positions(snapshots, summary)
                 dashboard.update_indicators(self._vwap, self._rsi, self._atr, self._current_price)
         except Exception:
-            pass
+            log.warning("_refresh_dashboard: failed to update dashboard", exc_info=True)
 
     def _on_alert_triggered(self, alert, price: float) -> None:
         """Called by AlertManager when a price alert fires."""
@@ -822,7 +822,7 @@ class TradeApp(App):
             alerts_screen = self.get_screen("alerts")
             alerts_screen.notify_triggered(alert, price)
         except Exception:
-            pass
+            log.warning("_on_alert_triggered: failed to notify alerts screen", exc_info=True)
 
     # ---------------------------------------------------------------------------
     # App-level actions called by screens

@@ -6,10 +6,15 @@ path (market orders, immediately-filled limits) and the WebSocket fill path
 (limit orders that fill asynchronously after placement).
 """
 
+import logging
+
 from app import database as db
 from app.models import Position, Trade
 
+log = logging.getLogger(__name__)
+
 _ATR_MULTIPLIER = 1.5
+
 _DUST_THRESHOLD = 1e-6
 
 
@@ -24,6 +29,13 @@ def record_buy(
     atr: float | None = None,
 ) -> None:
     """Create or update a local Position and record the Trade for a buy fill."""
+    if amount <= 0:
+        log.warning("record_buy: invalid amount %s for %s — rejecting", amount, symbol)
+        return
+    if price <= 0:
+        log.warning("record_buy: invalid price %s for %s — rejecting", price, symbol)
+        return
+
     existing = db.get_position_by_symbol(symbol)
 
     if existing:
@@ -69,8 +81,16 @@ def record_sell(
     order_type: str,
 ) -> None:
     """Reduce or close a local Position and record the Trade for a sell fill."""
+    if amount <= 0:
+        log.warning("record_sell: invalid amount %s for %s — rejecting", amount, symbol)
+        return
+    if price <= 0:
+        log.warning("record_sell: invalid price %s for %s — rejecting", price, symbol)
+        return
+
     existing = db.get_position_by_symbol(symbol)
     if not existing:
+        log.warning("record_sell: no position found for %s — skipping", symbol)
         return
 
     if abs(existing.total_amount - amount) <= _DUST_THRESHOLD:

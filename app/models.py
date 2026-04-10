@@ -7,9 +7,11 @@ Positions and trades are tracked locally so we can:
 - Support future features: DCA calculator, fee tracking, CSV export
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from sqlmodel import SQLModel, Field
+
+from app.config import DUST_THRESHOLD
 
 
 class Position(SQLModel, table=True):
@@ -66,8 +68,10 @@ class Position(SQLModel, table=True):
         Add to this position, recalculating the weighted average entry price.
         Formula: new_avg = (old_avg * old_size + new_price * new_size) / (old_size + new_size)
         """
-        total_cost = (self.avg_entry_price * self.total_amount) + (price * amount)
+        if amount <= 0:
+            raise ValueError(f"add_to_position: amount must be positive, got {amount}")
         self.total_amount += amount
+        total_cost = (self.avg_entry_price * (self.total_amount - amount)) + (price * amount)
         self.avg_entry_price = total_cost / self.total_amount
         self.total_fees_paid += fee
 
@@ -86,10 +90,10 @@ class Position(SQLModel, table=True):
         self.realized_pnl += pnl
         self.total_amount -= close_amount
 
-        if self.total_amount <= 1e-6:  # treat as zero — below any exchange minimum
+        if self.total_amount <= DUST_THRESHOLD:
             self.total_amount = 0.0
             self.status = "closed"
-            self.closed_at = datetime.utcnow()
+            self.closed_at = datetime.now(timezone.utc)
 
         return pnl
 

@@ -41,8 +41,10 @@ class PnlSummary(Static):
         yield Static("Open Value: —", id="open-value", classes="summary-item")
         yield Static("Positions: 0", id="pos-count", classes="summary-item")
 
-    def update_summary(self, summary: PortfolioSummary) -> None:
+    def update_summary(self, summary: PortfolioSummary | None) -> None:
         """Refresh all summary labels with the latest open-positions data."""
+        if summary is None:
+            return
         upnl = summary.total_unrealized_pnl
         rpnl = summary.total_realized_pnl
 

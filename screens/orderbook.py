@@ -10,6 +10,7 @@ Features:
 Updated in real-time via the WebSocket orderbook worker.
 """
 
+import logging
 from typing import Optional
 from textual.app import ComposeResult
 from textual.screen import Screen
@@ -17,6 +18,8 @@ from textual.widgets import Header, Footer, Static, DataTable
 from textual.containers import Horizontal, Vertical
 
 from app.config import ORDER_BOOK_DEPTH
+
+log = logging.getLogger(__name__)
 
 # Width of the depth bar in characters
 _BAR_WIDTH = 12
@@ -289,7 +292,11 @@ class OrderBookScreen(Screen):
         tick_size: float = 0,
     ) -> None:
         """Update the combined spread + imbalance info bar."""
-        bar = self.query_one("#info-bar", Static)
+        try:
+            bar = self.query_one("#info-bar", Static)
+        except Exception:
+            log.warning("_update_info_bar: info bar not mounted", exc_info=True)
+            return
 
         if not bids or not asks:
             bar.update(f"{symbol}  │  No data")

@@ -5,11 +5,13 @@ Alerts are evaluated on every WebSocket ticker update — zero polling needed.
 When an alert triggers, it fires a callback that the TUI uses to show a notification.
 """
 
-from datetime import datetime
+import logging
 from typing import Callable, Optional
 
 from app.models import PriceAlert
 from app import database as db
+
+log = logging.getLogger(__name__)
 
 
 # Type alias for the notification callback
@@ -49,17 +51,28 @@ class AlertManager:
 
     def reload(self) -> None:
         """Reload active (untriggered) alerts from the database."""
-        self._active_alerts = db.get_active_alerts()
+        try:
+            self._active_alerts = db.get_active_alerts()
+        except Exception:
+            log.warning("reload: failed to load alerts from DB", exc_info=True)
+            self._active_alerts = []
 
     def add_alert(self, alert: PriceAlert) -> PriceAlert:
         """Persist a new alert and add it to the active set."""
-        saved = db.save_alert(alert)
-        self._active_alerts.append(saved)
-        return saved
+        try:
+            saved = db.save_alert(alert)
+            self._active_alerts.append(saved)
+            return saved
+        except Exception:
+            log.warning("add_alert: failed to save alert to DB", exc_info=True)
+            raise
 
     def remove_alert(self, alert_id: int) -> None:
         """Delete an alert from the database and remove from active set."""
-        db.delete_alert(alert_id)
+        try:
+            db.delete_alert(alert_id)
+        except Exception:
+            log.warning("remove_alert: failed to delete alert %s from DB", alert_id, exc_info=True)
         self._active_alerts = [a for a in self._active_alerts if a.id != alert_id]
 
     def evaluate(self, symbol: str, current_price: float) -> list[PriceAlert]:
@@ -84,9 +97,15 @@ class AlertManager:
             if hit:
                 triggered.append(alert)
                 if not self._read_only:
-                    db.mark_alert_triggered(alert.id)
+                    try:
+                        db.mark_alert_triggered(alert.id)
+                    except Exception:
+                        log.warning("evaluate: failed to mark alert %s triggered in DB", alert.id, exc_info=True)
                 if self._on_trigger:
-                    self._on_trigger(alert, current_price)
+                    try:
+                        self._on_trigger(alert, current_price)
+                    except Exception:
+                        log.warning("evaluate: alert trigger callback failed for alert %s", alert.id, exc_info=True)
             else:
                 remaining.append(alert)
 

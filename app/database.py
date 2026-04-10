@@ -192,13 +192,13 @@ def save_alert(alert: PriceAlert) -> PriceAlert:
 
 
 def mark_alert_triggered(alert_id: int) -> None:
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     with Session(engine) as session:
         alert = session.get(PriceAlert, alert_id)
         if alert:
             alert.triggered = True
-            alert.triggered_at = datetime.utcnow()
+            alert.triggered_at = datetime.now(timezone.utc)
             session.add(alert)
             session.commit()
 

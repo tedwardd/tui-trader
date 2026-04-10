@@ -168,3 +168,14 @@ CLOUD_SYNC_BUCKET: str = os.getenv("CLOUD_SYNC_BUCKET", "")
 CLOUD_SYNC_KEY_ID: str = os.getenv("CLOUD_SYNC_KEY_ID", "")
 CLOUD_SYNC_KEY_SECRET: str = os.getenv("CLOUD_SYNC_KEY_SECRET", "")
 CLOUD_SYNC_OBJECT_KEY: str = os.getenv("CLOUD_SYNC_OBJECT_KEY", "trades.db")
+
+# --- Internal constants (not configurable via env) ---
+
+# Dust threshold: positions with total_amount <= this are closed as zero
+DUST_THRESHOLD: float = 1e-6
+
+# ATR refresh interval in seconds (30 minutes)
+ATR_REFRESH_SECONDS: int = 30 * 60
+
+# Order book fetch depth for WebSocket subscription
+ORDERBOOK_FETCH_DEPTH: int = 500

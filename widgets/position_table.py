@@ -9,7 +9,7 @@ from textual.app import ComposeResult
 from textual.widgets import DataTable, Static
 from textual.reactive import reactive
 
-from app.pnl import PositionSnapshot, format_pnl, format_pnl_pct, pnl_color_class
+from app.pnl import PositionSnapshot, format_pnl, format_pnl_pct
 
 
 COLUMNS = [
@@ -47,10 +47,10 @@ class PositionTable(Static):
     """
 
     # Track which symbols currently have rows — avoids relying on RowKey str()
-    _row_symbols: set[str]
+    _row_symbols: set[str] = set()
 
     def on_mount(self) -> None:
-        self._row_symbols = set()
+        pass
 
     def compose(self) -> ComposeResult:
         table = DataTable(id="positions-table", cursor_type="row")
